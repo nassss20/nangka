@@ -29,12 +29,14 @@ class NangkaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Nangka Inventory',
       theme: ThemeData(
-        primaryColor: const Color(0xFF2E7D32), 
-        scaffoldBackgroundColor: const Color(0xFFF9FBE7), 
+        // --- NANGKA COLOR PALETTE ---
+        primaryColor: const Color(0xFF2E7D32), // Deep Nangka Green
+        scaffoldBackgroundColor: const Color(0xFFF9FBE7), // Very light yellow-green tint
         colorScheme: ColorScheme.fromSwatch().copyWith(
           primary: const Color(0xFF2E7D32),
-          secondary: const Color(0xFFFFCA28), 
+          secondary: const Color(0xFFFFCA28), // Vibrant Nangka Yellow
         ),
+        // --- GLOBAL INPUT DESIGN (PC Friendly) ---
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
@@ -52,6 +54,7 @@ class NangkaApp extends StatelessWidget {
             borderSide: const BorderSide(color: Color(0xFF2E7D32), width: 2),
           ),
         ),
+        // --- GLOBAL BUTTON DESIGN ---
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF2E7D32),
@@ -61,6 +64,7 @@ class NangkaApp extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 16),
           ),
         ),
+        // --- GLOBAL CARD DESIGN ---
         cardTheme: CardThemeData(
           elevation: 3,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -155,6 +159,7 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
+        // PC FRIENDLY CONSTRAINT
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
@@ -186,8 +191,8 @@ class _LoginPageState extends State<LoginPage> {
                   child: ElevatedButton(
                     onPressed: _login, 
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFCA28), 
-                      foregroundColor: const Color(0xFF2E7D32), 
+                      backgroundColor: const Color(0xFFFFCA28), // Yellow Button
+                      foregroundColor: const Color(0xFF2E7D32), // Green Text
                     ),
                     child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
                   )
@@ -423,6 +428,7 @@ class _EntryPageState extends State<EntryPage> {
   @override
   Widget build(BuildContext context) {
     return Center(
+      // PC FRIENDLY CONSTRAINT
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 800),
         child: SingleChildScrollView(
@@ -576,13 +582,12 @@ class _FinancePageState extends State<FinancePage> {
     double purchaseKg = double.tryParse(_kgController.text) ?? 0.0;
     double purchaseRm = double.tryParse(_purchaseRmController.text) ?? 0.0;
     
-    InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
     try {
-      if (item != null) {
-        Map<String, dynamic> body = item.toJson();
+      if (_currentPurchaseItem != null) {
+        Map<String, dynamic> body = _currentPurchaseItem!.toJson();
         body['purchase_kg'] = purchaseKg;
         body['purchase_rm'] = purchaseRm;
-        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+        await http.put(Uri.parse('$apiUrl/${_currentPurchaseItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       } else {
         Map<String, dynamic> body = {
           'date': DateFormat('yyyy-MM-dd').format(_purchaseDate), 'kg': 0.0, 
@@ -591,54 +596,60 @@ class _FinancePageState extends State<FinancePage> {
         };
         await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       }
+
+      // Force UI to show new data immediately before fetching
+      setState(() {
+        if (_currentPurchaseItem != null) {
+          _currentPurchaseItem = InventoryItem(
+            id: _currentPurchaseItem!.id, date: _currentPurchaseItem!.date, kg: _currentPurchaseItem!.kg, purchaseKg: purchaseKg, totalPacks: _currentPurchaseItem!.totalPacks, displayPacks: _currentPurchaseItem!.displayPacks, rejectedAmount: _currentPurchaseItem!.rejectedAmount, rejectedUnit: _currentPurchaseItem!.rejectedUnit, balancePacks: _currentPurchaseItem!.balancePacks, purchaseRM: purchaseRm, salesRM: _currentPurchaseItem!.salesRM
+          );
+        }
+      });
+
+      await _fetchPurchaseData(); 
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Saved!'), backgroundColor: Color(0xFF2E7D32)));
-      _fetchPurchaseData(); 
     } catch (e) {
+      print(e);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving purchase.'), backgroundColor: Colors.red));
     } finally { setState(() => _isLoading = false); }
   }
 
-  Future<void> _deletePurchase(InventoryItem item) async {
+  Future<void> _deleteFin(int id, bool isPurchase) async {
     setState(() => _isLoading = true);
-    try {
-      Map<String, dynamic> body = item.toJson();
-      body['purchase_kg'] = 0.0;
-      body['purchase_rm'] = 0.0;
-      await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      _fetchPurchaseData();
-    } catch (e) { print(e); }
-    setState(() => _isLoading = false);
-  }
-
-  Future<void> _saveSales() async {
-    setState(() => _isLoading = true);
-    InventoryItem? item = await _getFirstEntryForDate(_salesDate);
-    
+    var item = isPurchase ? _currentPurchaseItem : _currentSalesItem;
     if (item != null) {
       try {
         Map<String, dynamic> body = item.toJson();
-        body['sales_rm'] = _totalSalesCalculated;
+        if (isPurchase) { body['purchase_kg'] = 0.0; body['purchase_rm'] = 0.0; } else { body['sales_rm'] = 0.0; }
         await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!'), backgroundColor: Color(0xFF2E7D32)));
-        _fetchSalesData(); 
-      } catch (e) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.'), backgroundColor: Colors.red));
-      }
-    } else {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No entry found for this date. Please create an entry first.'), backgroundColor: Colors.orange));
+        isPurchase ? await _fetchPurchaseData() : await _fetchSalesData();
+      } catch (e) { print(e); }
     }
     setState(() => _isLoading = false);
   }
 
-  Future<void> _deleteSales(InventoryItem item) async {
+  Future<void> _saveSales() async {
+    if (_currentSalesItem == null) return;
     setState(() => _isLoading = true);
+    
     try {
-      Map<String, dynamic> body = item.toJson();
-      body['sales_rm'] = 0.0;
-      await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      _fetchSalesData();
-    } catch (e) { print(e); }
-    setState(() => _isLoading = false);
+      Map<String, dynamic> body = _currentSalesItem!.toJson();
+      body['sales_rm'] = _totalSalesCalculated;
+      await http.put(Uri.parse('$apiUrl/${_currentSalesItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      
+      // Force UI to show new data immediately before fetching
+      setState(() {
+        _currentSalesItem = InventoryItem(
+            id: _currentSalesItem!.id, date: _currentSalesItem!.date, kg: _currentSalesItem!.kg, purchaseKg: _currentSalesItem!.purchaseKg, totalPacks: _currentSalesItem!.totalPacks, displayPacks: _currentSalesItem!.displayPacks, rejectedAmount: _currentSalesItem!.rejectedAmount, rejectedUnit: _currentSalesItem!.rejectedUnit, balancePacks: _currentSalesItem!.balancePacks, purchaseRM: _currentSalesItem!.purchaseRM, salesRM: _totalSalesCalculated
+        );
+      });
+
+      await _fetchSalesData(); 
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!'), backgroundColor: Color(0xFF2E7D32)));
+    } catch (e) {
+      print(e);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.'), backgroundColor: Colors.red));
+    } finally { setState(() => _isLoading = false); }
   }
 
   String _formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
@@ -706,18 +717,10 @@ class _FinancePageState extends State<FinancePage> {
                               ),
                               Row(
                                 children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.edit, color: Colors.blue), 
-                                    onPressed: () {
-                                      setState(() {
-                                        _kgController.text = _currentPurchaseItem!.purchaseKg.toString();
-                                        _purchaseRmController.text = _currentPurchaseItem!.purchaseRM.toString();
-                                      });
-                                    }
-                                  ),
+                                  // REMOVED EDIT BUTTON HERE
                                   IconButton(
                                     icon: const Icon(Icons.delete, color: Colors.red), 
-                                    onPressed: () => _deletePurchase(_currentPurchaseItem!)
+                                    onPressed: () => _deleteFin(_currentPurchaseItem!.id, true)
                                   ),
                                 ],
                               )
@@ -804,7 +807,7 @@ class _FinancePageState extends State<FinancePage> {
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red), 
-                                onPressed: () => _deleteSales(_currentSalesItem!)
+                                onPressed: () => _deleteFin(_currentSalesItem!.id, false)
                               ),
                             ],
                           )
@@ -1014,6 +1017,9 @@ class _SummaryPageState extends State<SummaryPage> {
         if (snapshot.hasError) return Center(child: Text('Database Error.\nPlease check your connection.', textAlign: TextAlign.center, style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.bold)));
 
         List<InventoryItem> filteredData = _filterData(snapshot.data ?? []);
+        
+        // --- ADDED SORTING: Forces Chronological Order ---
+        filteredData.sort((a, b) => a.date.compareTo(b.date));
         
         Map<String, Map<String, dynamic>> dailyTotals = {};
         for (var item in filteredData) {
