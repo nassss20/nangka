@@ -1,17 +1,35 @@
-# 1. Use a pre-built server image that has PHP 8.2 and Nginx ready to go
-FROM webdevops/php-nginx:8.2-alpine
+# Stage 1: Build the Flutter Web App
+FROM debian:latest AS build-env
 
-# 2. Tell the server that Laravel's public folder is the main entry point
-ENV WEB_DOCUMENT_ROOT=/app/public
+# Install necessary dependencies
+RUN apt-get update && apt-get install -y curl git wget unzip libgconf-2-4 gdb libstdc++6 libglu1-mesa fonts-droid-fallback lib32stdc++6 python3 xz-utils
+RUN apt-get clean
 
-# 3. Move into the app folder
+# Clone the Flutter repo
+RUN git clone https://github.com/flutter/flutter.git /usr/local/flutter
+ENV PATH="/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}"
+
+# Run flutter doctor
+RUN flutter doctor -v
+RUN flutter channel stable
+RUN flutter upgrade
+
+# Copy your app code into the container
 WORKDIR /app
-
-# 4. Copy all your Laravel code from GitHub into the server
 COPY . .
 
-# 5. Install all Laravel dependencies (skipping developer tools)
-RUN composer install --no-interaction --optimize-autoloader --no-dev
+# Get Dart dependencies and build the web app
+RUN flutter pub get
+RUN flutter build web
 
-# 6. Give the server permission to read and write files (like logs/cache)
-RUN chown -R application:application .
+# Stage 2: Serve the app using Nginx
+FROM nginx:alpine
+
+# Copy the built web files from Stage 1 into the Nginx server
+COPY --from=build-env /app/build/web /usr/share/nginx/html
+
+# Expose port 80 for Render
+EXPOSE 80
+
+# Start the server
+CMD ["nginx", "-g", "daemon off;"]
