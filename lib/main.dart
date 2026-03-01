@@ -7,7 +7,6 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-// CORRECTED API URL TO POINT TO LARAVEL BACKEND
 const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
 
 void main() {
@@ -36,6 +35,7 @@ class InventoryItem {
   final int id;
   final DateTime date;
   final double kg;
+  final double purchaseKg; // NEW COLUMN
   final int totalPacks;
   final int displayPacks;
   final int rejectedAmount;
@@ -45,23 +45,24 @@ class InventoryItem {
   final double salesRM;
 
   InventoryItem({
-    required this.id, required this.date, required this.kg, required this.totalPacks,
-    required this.displayPacks, required this.rejectedAmount, required this.rejectedUnit,
-    required this.balancePacks, required this.purchaseRM, required this.salesRM,
+    required this.id, required this.date, required this.kg, required this.purchaseKg, 
+    required this.totalPacks, required this.displayPacks, required this.rejectedAmount, 
+    required this.rejectedUnit, required this.balancePacks, required this.purchaseRM, required this.salesRM,
   });
 
   factory InventoryItem.fromJson(Map<String, dynamic> json) {
     return InventoryItem(
       id: json['id'],
       date: DateTime.parse(json['date']),
-      kg: double.parse(json['kg'].toString()),
-      totalPacks: json['total_packs'],
-      displayPacks: json['display_packs'],
-      rejectedAmount: json['rejected_amount'],
-      rejectedUnit: json['rejected_unit'],
-      balancePacks: json['balance_packs'],
-      purchaseRM: double.parse(json['purchase_rm'].toString()),
-      salesRM: double.parse(json['sales_rm'].toString()),
+      kg: double.parse((json['kg'] ?? 0).toString()),
+      purchaseKg: double.parse((json['purchase_kg'] ?? 0).toString()), 
+      totalPacks: json['total_packs'] ?? 0,
+      displayPacks: json['display_packs'] ?? 0,
+      rejectedAmount: json['rejected_amount'] ?? 0,
+      rejectedUnit: json['rejected_unit'] ?? 'Packs',
+      balancePacks: json['balance_packs'] ?? 0,
+      purchaseRM: double.parse((json['purchase_rm'] ?? 0).toString()),
+      salesRM: double.parse((json['sales_rm'] ?? 0).toString()),
     );
   }
 
@@ -69,6 +70,7 @@ class InventoryItem {
     return {
       'date': DateFormat('yyyy-MM-dd').format(date),
       'kg': kg,
+      'purchase_kg': purchaseKg, 
       'total_packs': totalPacks,
       'display_packs': displayPacks,
       'rejected_amount': rejectedAmount,
@@ -108,9 +110,9 @@ class _LoginPageState extends State<LoginPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.inventory, size: 80, color: Colors.green),
+              Image.asset('assets/nangka-logo.png', height: 120),
               const SizedBox(height: 24),
-              const Text('Project Nangka', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+              const Text('Nangka Management System', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
               const SizedBox(height: 32),
               TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', border: OutlineInputBorder())),
               const SizedBox(height: 16),
@@ -183,7 +185,7 @@ class EntryPage extends StatefulWidget {
 
 class _EntryPageState extends State<EntryPage> {
   DateTime _selectedDate = DateTime.now();
-  final _kgController = TextEditingController(); // RESTORED KG CONTROLLER
+  final _kgController = TextEditingController();
   final _totalController = TextEditingController();
   final _displayController = TextEditingController();
   final _rejectController = TextEditingController();
@@ -194,8 +196,9 @@ class _EntryPageState extends State<EntryPage> {
   List<InventoryItem> _todaysEntries = [];
 
   // Hidden financial variables to preserve data when editing
-  double _currentPurchase = 0.0;
-  double _currentSales = 0.0;
+  double _currentPurchaseKg = 0.0;
+  double _currentPurchaseRM = 0.0;
+  double _currentSalesRM = 0.0;
 
   @override
   void initState() {
@@ -238,8 +241,9 @@ class _EntryPageState extends State<EntryPage> {
     _totalController.clear(); 
     _displayController.clear(); 
     _rejectController.clear();
-    _currentPurchase = 0.0; 
-    _currentSales = 0.0;
+    _currentPurchaseKg = 0.0;
+    _currentPurchaseRM = 0.0; 
+    _currentSalesRM = 0.0;
     _calculateBalance();
   }
 
@@ -248,13 +252,14 @@ class _EntryPageState extends State<EntryPage> {
     Map<String, dynamic> bodyData = {
       'date': DateFormat('yyyy-MM-dd').format(_selectedDate),
       'kg': double.tryParse(_kgController.text) ?? 0.0,
+      'purchase_kg': _currentPurchaseKg, // PRESERVE
       'total_packs': int.tryParse(_totalController.text) ?? 0,
       'display_packs': int.tryParse(_displayController.text) ?? 0,
       'rejected_amount': int.tryParse(_rejectController.text) ?? 0,
       'rejected_unit': _rejectUnit,
       'balance_packs': _balance,
-      'purchase_rm': _currentPurchase,
-      'sales_rm': _currentSales,
+      'purchase_rm': _currentPurchaseRM, // PRESERVE
+      'sales_rm': _currentSalesRM, // PRESERVE
     };
 
     try {
@@ -282,8 +287,9 @@ class _EntryPageState extends State<EntryPage> {
       _balance = item.balancePacks;
       
       // Preserve hidden finance data
-      _currentPurchase = item.purchaseRM;
-      _currentSales = item.salesRM;
+      _currentPurchaseKg = item.purchaseKg;
+      _currentPurchaseRM = item.purchaseRM;
+      _currentSalesRM = item.salesRM;
     });
   }
 
@@ -325,10 +331,8 @@ class _EntryPageState extends State<EntryPage> {
           if (_editingId != null)
             Container(padding: const EdgeInsets.all(8), margin: const EdgeInsets.only(bottom: 16), color: Colors.orange[100], child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('EDITING MODE', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange)), IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() => _editingId = null); _clearForm(); })])),
 
-          // RESTORED KG INPUT FIELD
           TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount (KG)', border: OutlineInputBorder())),
           const SizedBox(height: 12),
-          
           TextField(controller: _totalController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Total Packs', border: OutlineInputBorder())),
           const SizedBox(height: 12),
           TextField(controller: _displayController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Display Packs', border: OutlineInputBorder())),
@@ -368,13 +372,17 @@ class _FinancePageState extends State<FinancePage> {
   DateTime _purchaseDate = DateTime.now();
   DateTime _salesDate = DateTime.now();
 
-  final _kgController = TextEditingController();
+  final _kgController = TextEditingController(); // This now explicitly links to purchase_kg
   final _purchaseRmController = TextEditingController();
   final _salesPriceController = TextEditingController(text: '6.99');
   
   int _salesDisplayedPacks = 0;
   double _totalSalesCalculated = 0.0;
   bool _isLoading = false;
+
+  // Track the actual items for the bottom lists
+  InventoryItem? _currentPurchaseItem;
+  InventoryItem? _currentSalesItem;
 
   @override
   void initState() {
@@ -399,19 +407,20 @@ class _FinancePageState extends State<FinancePage> {
   Future<void> _fetchPurchaseData() async {
     InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
     setState(() {
-      if (item != null) {
-        _kgController.text = item.kg == 0 ? '' : item.kg.toString();
-        _purchaseRmController.text = item.purchaseRM == 0 ? '' : item.purchaseRM.toString();
-      } else {
-        _kgController.clear();
-        _purchaseRmController.clear();
-      }
+      _currentPurchaseItem = item;
+      _clearPurchaseForm();
     });
+  }
+
+  void _clearPurchaseForm() {
+    _kgController.clear();
+    _purchaseRmController.clear();
   }
 
   Future<void> _fetchSalesData() async {
     InventoryItem? item = await _getFirstEntryForDate(_salesDate);
     setState(() {
+      _currentSalesItem = item;
       _salesDisplayedPacks = item?.displayPacks ?? 0;
       _calculateSales();
     });
@@ -426,27 +435,42 @@ class _FinancePageState extends State<FinancePage> {
 
   Future<void> _savePurchase() async {
     setState(() => _isLoading = true);
-    double kg = double.tryParse(_kgController.text) ?? 0.0;
+    double purchaseKg = double.tryParse(_kgController.text) ?? 0.0;
     double purchaseRm = double.tryParse(_purchaseRmController.text) ?? 0.0;
     
     InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
     try {
       if (item != null) {
         Map<String, dynamic> body = item.toJson();
-        body['kg'] = kg;
+        body['purchase_kg'] = purchaseKg;
         body['purchase_rm'] = purchaseRm;
         await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       } else {
         Map<String, dynamic> body = {
-          'date': DateFormat('yyyy-MM-dd').format(_purchaseDate), 'kg': kg, 'purchase_rm': purchaseRm,
+          'date': DateFormat('yyyy-MM-dd').format(_purchaseDate), 'kg': 0.0, 
+          'purchase_kg': purchaseKg, 'purchase_rm': purchaseRm,
           'total_packs': 0, 'display_packs': 0, 'rejected_amount': 0, 'rejected_unit': 'Packs', 'balance_packs': 0, 'sales_rm': 0
         };
         await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       }
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Saved!')));
+      _fetchPurchaseData(); // Refresh list
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving purchase.')));
     } finally { setState(() => _isLoading = false); }
+  }
+
+  // Deletes just reset the financial values to 0 to protect daily entry data
+  Future<void> _deletePurchase(InventoryItem item) async {
+    setState(() => _isLoading = true);
+    try {
+      Map<String, dynamic> body = item.toJson();
+      body['purchase_kg'] = 0.0;
+      body['purchase_rm'] = 0.0;
+      await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      _fetchPurchaseData();
+    } catch (e) { print(e); }
+    setState(() => _isLoading = false);
   }
 
   Future<void> _saveSales() async {
@@ -459,12 +483,24 @@ class _FinancePageState extends State<FinancePage> {
         body['sales_rm'] = _totalSalesCalculated;
         await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!')));
+        _fetchSalesData(); // Refresh list
       } catch (e) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.')));
       }
     } else {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No entry found for this date. Please create an entry first.')));
     }
+    setState(() => _isLoading = false);
+  }
+
+  Future<void> _deleteSales(InventoryItem item) async {
+    setState(() => _isLoading = true);
+    try {
+      Map<String, dynamic> body = item.toJson();
+      body['sales_rm'] = 0.0;
+      await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      _fetchSalesData();
+    } catch (e) { print(e); }
     setState(() => _isLoading = false);
   }
 
@@ -477,7 +513,7 @@ class _FinancePageState extends State<FinancePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // PURCHASE CARD
+          // ================= PURCHASE CARD =================
           Card(
             elevation: 3,
             child: Padding(
@@ -501,11 +537,49 @@ class _FinancePageState extends State<FinancePage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount (KG)', border: OutlineInputBorder())),
+                  TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock Bought (KG)', border: OutlineInputBorder())),
                   const SizedBox(height: 12),
                   TextField(controller: _purchaseRmController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Purchase Price (RM)', border: OutlineInputBorder())),
                   const SizedBox(height: 16),
                   SizedBox(width: double.infinity, height: 45, child: ElevatedButton(onPressed: _isLoading ? null : _savePurchase, child: const Text('Save Purchase'))),
+                  
+                  // DISPLAY SAVED PURCHASE BELOW BOX
+                  if (_currentPurchaseItem != null && (_currentPurchaseItem!.purchaseKg > 0 || _currentPurchaseItem!.purchaseRM > 0)) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: Colors.blueGrey[50], borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blueGrey.shade200)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Stock Bought: ${_currentPurchaseItem!.purchaseKg} KG', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              Text('Cost: RM ${_currentPurchaseItem!.purchaseRM.toStringAsFixed(2)}', style: TextStyle(color: Colors.blueGrey[700])),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Colors.blue, size: 20), 
+                                onPressed: () {
+                                  setState(() {
+                                    _kgController.text = _currentPurchaseItem!.purchaseKg.toString();
+                                    _purchaseRmController.text = _currentPurchaseItem!.purchaseRM.toString();
+                                  });
+                                }
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red, size: 20), 
+                                onPressed: () => _deletePurchase(_currentPurchaseItem!)
+                              ),
+                            ],
+                          )
+                        ],
+                      )
+                    )
+                  ]
                 ],
               ),
             ),
@@ -513,7 +587,7 @@ class _FinancePageState extends State<FinancePage> {
           
           const SizedBox(height: 24),
           
-          // SALES CARD
+          // ================= SALES CARD =================
           Card(
             elevation: 3,
             child: Padding(
@@ -555,6 +629,31 @@ class _FinancePageState extends State<FinancePage> {
                   ),
                   const SizedBox(height: 16),
                   SizedBox(width: double.infinity, height: 45, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.green), onPressed: _isLoading ? null : _saveSales, child: const Text('Save Sales'))),
+
+                  // DISPLAY SAVED SALES BELOW BOX
+                  if (_currentSalesItem != null && _currentSalesItem!.salesRM > 0) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: Colors.green[50], borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.green.shade200)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Sales Recorded', style: TextStyle(fontWeight: FontWeight.bold)),
+                              Text('Total: RM ${_currentSalesItem!.salesRM.toStringAsFixed(2)}', style: TextStyle(color: Colors.green[800])),
+                            ],
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red, size: 20), 
+                            onPressed: () => _deleteSales(_currentSalesItem!)
+                          ),
+                        ],
+                      )
+                    )
+                  ]
                 ],
               ),
             ),
@@ -653,11 +752,11 @@ class _SummaryPageState extends State<SummaryPage> {
         children: [
           pw.Text(title, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
           pw.Divider(),
-          _buildPdfRow('Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)),
+          _buildPdfRow('Daily Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)),
           _buildPdfRow('Packs', '$packs'),
           _buildPdfRow('Display', '$display'),
           _buildPdfRow('Balance', '$balance'),
-          if (isTotal) _buildPdfRow('Purchase', purchase.toStringAsFixed(0)),
+          if (isTotal) _buildPdfRow('Purchase Cost', purchase.toStringAsFixed(0)),
           _buildPdfRow('Sales', sales.toStringAsFixed(0)),
           if (isTotal) _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), isProfit: true, profitValue: profit),
         ],
@@ -700,11 +799,11 @@ class _SummaryPageState extends State<SummaryPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: isTotal ? Colors.black : Colors.blueGrey[800])), const Divider(thickness: 1),
-          _buildDataRow('Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)), 
+          _buildDataRow('Daily Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)), 
           _buildDataRow('Packs', '$packs'), 
           _buildDataRow('Display', '$display'),
           _buildDataRow('Balance', '$balance'), 
-          if (isTotal) _buildDataRow('Purchase', purchase.toStringAsFixed(0)), 
+          if (isTotal) _buildDataRow('Purchase Cost', purchase.toStringAsFixed(0)), 
           _buildDataRow('Sales', sales.toStringAsFixed(0)),
           if (isTotal) _buildDataRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), valueColor: profit >= 0 ? Colors.green : Colors.red),
         ],
