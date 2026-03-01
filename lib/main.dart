@@ -58,7 +58,7 @@ class NangkaApp extends StatelessWidget {
           ),
         ),
         // --- GLOBAL CARD DESIGN ---
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 3,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.symmetric(vertical: 6),
