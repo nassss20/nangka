@@ -166,7 +166,7 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 32),
                 const Text('Nangka System', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
                 const SizedBox(height: 8),
-                Text('Admin Portal', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+                Text('Inventory & Sales Management Portal', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
                 const SizedBox(height: 32),
                 TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person))),
                 const SizedBox(height: 16),
@@ -181,7 +181,7 @@ class _LoginPageState extends State<LoginPage> {
                       backgroundColor: const Color(0xFFFFCA28), // Yellow Button
                       foregroundColor: const Color(0xFF2E7D32), // Green Text
                     ),
-                    child: const Text('SECURE LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
+                    child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
                   )
                 ),
               ],
