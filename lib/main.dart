@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart'; // NEW IMPORT
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -10,9 +10,9 @@ import 'package:printing/printing.dart';
 
 const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
 
-// UPDATE 1: Check storage before starting the app
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized(); // Required when doing things before runApp
+  // Required so SharedPreferences can talk to the native code before the app starts
+  WidgetsFlutterBinding.ensureInitialized(); 
   final prefs = await SharedPreferences.getInstance();
   final bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
   
@@ -20,7 +20,7 @@ void main() async {
 }
 
 class NangkaApp extends StatelessWidget {
-  final bool isLoggedIn; // NEW VARIABLE
+  final bool isLoggedIn;
   const NangkaApp({Key? key, required this.isLoggedIn}) : super(key: key);
 
   @override
@@ -67,9 +67,61 @@ class NangkaApp extends StatelessWidget {
           margin: const EdgeInsets.symmetric(vertical: 6),
         ),
       ),
-      // UPDATE 2: Route the user based on their saved status
+      // Automatically route user based on their saved login state
       home: isLoggedIn ? const MainDashboard() : const LoginPage(),
     );
+  }
+}
+
+// --- DATA MODEL ---
+class InventoryItem {
+  final int id;
+  final DateTime date;
+  final double kg;
+  final double purchaseKg; 
+  final int totalPacks;
+  final int displayPacks;
+  final int rejectedAmount;
+  final String rejectedUnit;
+  final int balancePacks;
+  final double purchaseRM;
+  final double salesRM;
+
+  InventoryItem({
+    required this.id, required this.date, required this.kg, required this.purchaseKg, 
+    required this.totalPacks, required this.displayPacks, required this.rejectedAmount, 
+    required this.rejectedUnit, required this.balancePacks, required this.purchaseRM, required this.salesRM,
+  });
+
+  factory InventoryItem.fromJson(Map<String, dynamic> json) {
+    return InventoryItem(
+      id: json['id'],
+      date: DateTime.parse(json['date']),
+      kg: double.parse((json['kg'] ?? 0).toString()),
+      purchaseKg: double.parse((json['purchase_kg'] ?? 0).toString()), 
+      totalPacks: json['total_packs'] ?? 0,
+      displayPacks: json['display_packs'] ?? 0,
+      rejectedAmount: json['rejected_amount'] ?? 0,
+      rejectedUnit: json['rejected_unit'] ?? 'Packs',
+      balancePacks: json['balance_packs'] ?? 0,
+      purchaseRM: double.parse((json['purchase_rm'] ?? 0).toString()),
+      salesRM: double.parse((json['sales_rm'] ?? 0).toString()),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'date': DateFormat('yyyy-MM-dd').format(date),
+      'kg': kg,
+      'purchase_kg': purchaseKg, 
+      'total_packs': totalPacks,
+      'display_packs': displayPacks,
+      'rejected_amount': rejectedAmount,
+      'rejected_unit': rejectedUnit,
+      'balance_packs': balancePacks,
+      'purchase_rm': purchaseRM,
+      'sales_rm': salesRM,
+    };
   }
 }
 
@@ -84,11 +136,10 @@ class _LoginPageState extends State<LoginPage> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  // UPDATE 3: Save the login state to storage when successful
   void _login() async {
     if (_usernameController.text == 'admin' && _passwordController.text == 'admin') {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isLoggedIn', true); // Save the token!
+      await prefs.setBool('isLoggedIn', true); // Save login token
       
       if (mounted) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
@@ -113,7 +164,7 @@ class _LoginPageState extends State<LoginPage> {
               children: [
                 Container(
                   padding: const EdgeInsets.all(16),
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     color: Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 5)],
@@ -123,7 +174,7 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 32),
                 const Text('Nangka System', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
                 const SizedBox(height: 8),
-                Text('Inventory & Sales Management Portal', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+                Text('Inventory & Sales Management Portal', style: TextStyle(fontSize: 16, color: Colors.grey[600]), textAlign: TextAlign.center),
                 const SizedBox(height: 32),
                 TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person))),
                 const SizedBox(height: 16),
@@ -164,10 +215,9 @@ class MainDashboard extends StatefulWidget {
 class _MainDashboardState extends State<MainDashboard> {
   int _currentIndex = 0;
 
-  // UPDATE 4: Clear the storage when logging out
   void _logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('isLoggedIn'); // Delete the token!
+    await prefs.remove('isLoggedIn'); // Delete login token
     
     if (mounted) {
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage()));
@@ -194,7 +244,7 @@ class _MainDashboardState extends State<MainDashboard> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout) // Call the new logout function
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout)
         ],
       ),
       body: Column(
@@ -209,8 +259,8 @@ class _MainDashboardState extends State<MainDashboard> {
         ],
       ),
       bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: const Offset(0, -2))],
+        decoration: const BoxDecoration(
+          boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -2))],
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
@@ -373,7 +423,6 @@ class _EntryPageState extends State<EntryPage> {
   @override
   Widget build(BuildContext context) {
     return Center(
-      // PC FRIENDLY CONSTRAINT
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 800),
         child: SingleChildScrollView(
@@ -597,7 +646,6 @@ class _FinancePageState extends State<FinancePage> {
   @override
   Widget build(BuildContext context) {
     return Center(
-      // PC FRIENDLY CONSTRAINT
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 800),
         child: SingleChildScrollView(
@@ -984,7 +1032,6 @@ class _SummaryPageState extends State<SummaryPage> {
         double tProfit = tSales - tPurchase;
 
         return Center(
-          // PC FRIENDLY CONSTRAINT
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 800),
             child: SingleChildScrollView(
