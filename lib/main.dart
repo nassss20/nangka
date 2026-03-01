@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart'; // NEW IMPORT
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -9,12 +10,18 @@ import 'package:printing/printing.dart';
 
 const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
 
-void main() {
-  runApp(const NangkaApp());
+// UPDATE 1: Check storage before starting the app
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized(); // Required when doing things before runApp
+  final prefs = await SharedPreferences.getInstance();
+  final bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+  
+  runApp(NangkaApp(isLoggedIn: isLoggedIn));
 }
 
 class NangkaApp extends StatelessWidget {
-  const NangkaApp({Key? key}) : super(key: key);
+  final bool isLoggedIn; // NEW VARIABLE
+  const NangkaApp({Key? key, required this.isLoggedIn}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -22,14 +29,12 @@ class NangkaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Nangka Inventory',
       theme: ThemeData(
-        // --- NANGKA COLOR PALETTE ---
-        primaryColor: const Color(0xFF2E7D32), // Deep Nangka Green
-        scaffoldBackgroundColor: const Color(0xFFF9FBE7), // Very light yellow-green tint
+        primaryColor: const Color(0xFF2E7D32), 
+        scaffoldBackgroundColor: const Color(0xFFF9FBE7), 
         colorScheme: ColorScheme.fromSwatch().copyWith(
           primary: const Color(0xFF2E7D32),
-          secondary: const Color(0xFFFFCA28), // Vibrant Nangka Yellow
+          secondary: const Color(0xFFFFCA28), 
         ),
-        // --- GLOBAL INPUT DESIGN (PC Friendly) ---
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
@@ -47,7 +52,6 @@ class NangkaApp extends StatelessWidget {
             borderSide: const BorderSide(color: Color(0xFF2E7D32), width: 2),
           ),
         ),
-        // --- GLOBAL BUTTON DESIGN ---
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF2E7D32),
@@ -57,67 +61,15 @@ class NangkaApp extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 16),
           ),
         ),
-        // --- GLOBAL CARD DESIGN ---
         cardTheme: CardThemeData(
           elevation: 3,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.symmetric(vertical: 6),
         ),
       ),
-      home: const LoginPage(),
+      // UPDATE 2: Route the user based on their saved status
+      home: isLoggedIn ? const MainDashboard() : const LoginPage(),
     );
-  }
-}
-
-// --- DATA MODEL ---
-class InventoryItem {
-  final int id;
-  final DateTime date;
-  final double kg;
-  final double purchaseKg; 
-  final int totalPacks;
-  final int displayPacks;
-  final int rejectedAmount;
-  final String rejectedUnit;
-  final int balancePacks;
-  final double purchaseRM;
-  final double salesRM;
-
-  InventoryItem({
-    required this.id, required this.date, required this.kg, required this.purchaseKg, 
-    required this.totalPacks, required this.displayPacks, required this.rejectedAmount, 
-    required this.rejectedUnit, required this.balancePacks, required this.purchaseRM, required this.salesRM,
-  });
-
-  factory InventoryItem.fromJson(Map<String, dynamic> json) {
-    return InventoryItem(
-      id: json['id'],
-      date: DateTime.parse(json['date']),
-      kg: double.parse((json['kg'] ?? 0).toString()),
-      purchaseKg: double.parse((json['purchase_kg'] ?? 0).toString()), 
-      totalPacks: json['total_packs'] ?? 0,
-      displayPacks: json['display_packs'] ?? 0,
-      rejectedAmount: json['rejected_amount'] ?? 0,
-      rejectedUnit: json['rejected_unit'] ?? 'Packs',
-      balancePacks: json['balance_packs'] ?? 0,
-      purchaseRM: double.parse((json['purchase_rm'] ?? 0).toString()),
-      salesRM: double.parse((json['sales_rm'] ?? 0).toString()),
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'date': DateFormat('yyyy-MM-dd').format(date),
-      'kg': kg,
-      'purchase_kg': purchaseKg, 
-      'total_packs': totalPacks,
-      'display_packs': displayPacks,
-      'rejected_amount': rejectedAmount,
-      'rejected_unit': rejectedUnit,
-      'balance_packs': balancePacks,
-      'purchase_rm': purchaseRM,
-      'sales_rm': salesRM,
-    };
   }
 }
 
@@ -132,9 +84,15 @@ class _LoginPageState extends State<LoginPage> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  void _login() {
+  // UPDATE 3: Save the login state to storage when successful
+  void _login() async {
     if (_usernameController.text == 'admin' && _passwordController.text == 'admin') {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isLoggedIn', true); // Save the token!
+      
+      if (mounted) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Invalid Credentials'), backgroundColor: Colors.red,
@@ -146,7 +104,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        // PC FRIENDLY CONSTRAINT
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
@@ -156,7 +113,7 @@ class _LoginPageState extends State<LoginPage> {
               children: [
                 Container(
                   padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
+                  decoration: const BoxDecoration(
                     color: Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 5)],
@@ -178,8 +135,8 @@ class _LoginPageState extends State<LoginPage> {
                   child: ElevatedButton(
                     onPressed: _login, 
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFCA28), // Yellow Button
-                      foregroundColor: const Color(0xFF2E7D32), // Green Text
+                      backgroundColor: const Color(0xFFFFCA28), 
+                      foregroundColor: const Color(0xFF2E7D32), 
                     ),
                     child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
                   )
@@ -206,6 +163,17 @@ class MainDashboard extends StatefulWidget {
 
 class _MainDashboardState extends State<MainDashboard> {
   int _currentIndex = 0;
+
+  // UPDATE 4: Clear the storage when logging out
+  void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('isLoggedIn'); // Delete the token!
+    
+    if (mounted) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage()));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Widget> screens = [
@@ -226,7 +194,7 @@ class _MainDashboardState extends State<MainDashboard> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage())))
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout) // Call the new logout function
         ],
       ),
       body: Column(
