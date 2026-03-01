@@ -1,8 +1,8 @@
 # Stage 1: Build the Flutter Web App
 FROM debian:latest AS build-env
 
-# Install necessary dependencies
-RUN apt-get update && apt-get install -y curl git wget unzip libgconf-2-4 gdb libstdc++6 libglu1-mesa fonts-droid-fallback lib32stdc++6 python3 xz-utils
+# Install necessary dependencies (outdated packages removed)
+RUN apt-get update && apt-get install -y curl git wget unzip gdb libstdc++6 libglu1-mesa fonts-droid-fallback python3 xz-utils
 RUN apt-get clean
 
 # Clone the Flutter repo
