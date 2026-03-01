@@ -7,7 +7,8 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-const String apiUrl = 'https://nangka.onrender.com/api/inventories';
+// CORRECTED API URL TO POINT TO LARAVEL BACKEND
+const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
 
 void main() {
   runApp(const NangkaApp());
@@ -122,7 +123,7 @@ class _LoginPageState extends State<LoginPage> {
       ),
       bottomNavigationBar: const Padding(
         padding: EdgeInsets.all(8.0),
-        child: Text('copyright nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 12)),
+        child: Text('© nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 12)),
       ),
     );
   }
@@ -156,7 +157,7 @@ class _MainDashboardState extends State<MainDashboard> {
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 8.0),
             color: Colors.white,
-            child: const Text('copyright nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.grey)),
+            child: const Text('© nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.grey)),
           )
         ],
       ),
@@ -182,6 +183,7 @@ class EntryPage extends StatefulWidget {
 
 class _EntryPageState extends State<EntryPage> {
   DateTime _selectedDate = DateTime.now();
+  final _kgController = TextEditingController(); // RESTORED KG CONTROLLER
   final _totalController = TextEditingController();
   final _displayController = TextEditingController();
   final _rejectController = TextEditingController();
@@ -191,8 +193,7 @@ class _EntryPageState extends State<EntryPage> {
   int? _editingId;
   List<InventoryItem> _todaysEntries = [];
 
-  // Hidden financial/KG variables to preserve data when editing
-  double _currentKg = 0.0;
+  // Hidden financial variables to preserve data when editing
   double _currentPurchase = 0.0;
   double _currentSales = 0.0;
 
@@ -233,8 +234,12 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   void _clearForm() {
-    _totalController.clear(); _displayController.clear(); _rejectController.clear();
-    _currentKg = 0.0; _currentPurchase = 0.0; _currentSales = 0.0;
+    _kgController.clear();
+    _totalController.clear(); 
+    _displayController.clear(); 
+    _rejectController.clear();
+    _currentPurchase = 0.0; 
+    _currentSales = 0.0;
     _calculateBalance();
   }
 
@@ -242,7 +247,7 @@ class _EntryPageState extends State<EntryPage> {
     setState(() => _isLoading = true);
     Map<String, dynamic> bodyData = {
       'date': DateFormat('yyyy-MM-dd').format(_selectedDate),
-      'kg': _currentKg,
+      'kg': double.tryParse(_kgController.text) ?? 0.0,
       'total_packs': int.tryParse(_totalController.text) ?? 0,
       'display_packs': int.tryParse(_displayController.text) ?? 0,
       'rejected_amount': int.tryParse(_rejectController.text) ?? 0,
@@ -271,12 +276,12 @@ class _EntryPageState extends State<EntryPage> {
   void _editEntry(InventoryItem item) {
     setState(() {
       _editingId = item.id; _selectedDate = item.date;
+      _kgController.text = item.kg == 0 ? '' : item.kg.toString();
       _totalController.text = item.totalPacks.toString(); _displayController.text = item.displayPacks.toString();
       _rejectController.text = item.rejectedAmount.toString(); _rejectUnit = item.rejectedUnit;
       _balance = item.balancePacks;
       
       // Preserve hidden finance data
-      _currentKg = item.kg;
       _currentPurchase = item.purchaseRM;
       _currentSales = item.salesRM;
     });
@@ -320,6 +325,10 @@ class _EntryPageState extends State<EntryPage> {
           if (_editingId != null)
             Container(padding: const EdgeInsets.all(8), margin: const EdgeInsets.only(bottom: 16), color: Colors.orange[100], child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('EDITING MODE', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange)), IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() => _editingId = null); _clearForm(); })])),
 
+          // RESTORED KG INPUT FIELD
+          TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount (KG)', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          
           TextField(controller: _totalController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Total Packs', border: OutlineInputBorder())),
           const SizedBox(height: 12),
           TextField(controller: _displayController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Display Packs', border: OutlineInputBorder())),
@@ -336,7 +345,7 @@ class _EntryPageState extends State<EntryPage> {
             final item = _todaysEntries[index]; 
             return Card(
               child: ListTile(
-                title: Text('Total: ${item.totalPacks} | Display: ${item.displayPacks} | Balance: ${item.balancePacks}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), 
+                title: Text('${item.kg} kg | Total: ${item.totalPacks} | Display: ${item.displayPacks} | Balance: ${item.balancePacks}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)), 
                 subtitle: Text('Rejected: ${item.rejectedAmount} ${item.rejectedUnit}'), 
                 trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _editEntry(item)), IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteEntry(item.id))])
               )
@@ -348,7 +357,7 @@ class _EntryPageState extends State<EntryPage> {
   }
 }
 
-// --- 4. FINANCE PAGE (NEW) ---
+// --- 4. FINANCE PAGE ---
 class FinancePage extends StatefulWidget {
   const FinancePage({Key? key}) : super(key: key);
   @override
