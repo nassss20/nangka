@@ -7,8 +7,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-
-const String apiUrl = 'http://192.168.1.16:8000/api/inventories';
+const String apiUrl = 'https://nangka.onrender.com/api/inventories';
 
 void main() {
   runApp(const NangkaApp());
@@ -33,7 +32,7 @@ class NangkaApp extends StatelessWidget {
 
 // --- DATA MODEL ---
 class InventoryItem {
-  final int id; 
+  final int id;
   final DateTime date;
   final double kg;
   final int totalPacks;
@@ -52,7 +51,7 @@ class InventoryItem {
 
   factory InventoryItem.fromJson(Map<String, dynamic> json) {
     return InventoryItem(
-      id: json['id'], 
+      id: json['id'],
       date: DateTime.parse(json['date']),
       kg: double.parse(json['kg'].toString()),
       totalPacks: json['total_packs'],
@@ -63,6 +62,20 @@ class InventoryItem {
       purchaseRM: double.parse(json['purchase_rm'].toString()),
       salesRM: double.parse(json['sales_rm'].toString()),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'date': DateFormat('yyyy-MM-dd').format(date),
+      'kg': kg,
+      'total_packs': totalPacks,
+      'display_packs': displayPacks,
+      'rejected_amount': rejectedAmount,
+      'rejected_unit': rejectedUnit,
+      'balance_packs': balancePacks,
+      'purchase_rm': purchaseRM,
+      'sales_rm': salesRM,
+    };
   }
 }
 
@@ -107,6 +120,10 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
+      bottomNavigationBar: const Padding(
+        padding: EdgeInsets.all(8.0),
+        child: Text('copyright nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 12)),
+      ),
     );
   }
 }
@@ -122,17 +139,35 @@ class _MainDashboardState extends State<MainDashboard> {
   int _currentIndex = 0;
   @override
   Widget build(BuildContext context) {
-    final List<Widget> screens = [EntryPage(key: UniqueKey()), SummaryPage(key: UniqueKey())];
+    final List<Widget> screens = [
+      EntryPage(key: UniqueKey()),
+      FinancePage(key: UniqueKey()),
+      SummaryPage(key: UniqueKey())
+    ];
     return Scaffold(
       appBar: AppBar(
         title: const Text('Nangka System'),
         actions: [IconButton(icon: const Icon(Icons.logout), onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage())))],
       ),
-      body: screens[_currentIndex],
+      body: Column(
+        children: [
+          Expanded(child: screens[_currentIndex]),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            color: Colors.white,
+            child: const Text('copyright nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.grey)),
+          )
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
-        items: const [BottomNavigationBarItem(icon: Icon(Icons.add_box), label: 'Entry'), BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'Summary')],
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.add_box), label: 'Entry'),
+          BottomNavigationBarItem(icon: Icon(Icons.attach_money), label: 'Finance'),
+          BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'Summary')
+        ],
       ),
     );
   }
@@ -147,17 +182,19 @@ class EntryPage extends StatefulWidget {
 
 class _EntryPageState extends State<EntryPage> {
   DateTime _selectedDate = DateTime.now();
-  final _kgController = TextEditingController();
   final _totalController = TextEditingController();
   final _displayController = TextEditingController();
   final _rejectController = TextEditingController();
-  final _purchaseController = TextEditingController(); 
-  final _salesController = TextEditingController();    
   String _rejectUnit = 'Packs';
   int _balance = 0;
   bool _isLoading = false;
-  int? _editingId; 
-  List<InventoryItem> _todaysEntries = []; 
+  int? _editingId;
+  List<InventoryItem> _todaysEntries = [];
+
+  // Hidden financial/KG variables to preserve data when editing
+  double _currentKg = 0.0;
+  double _currentPurchase = 0.0;
+  double _currentSales = 0.0;
 
   @override
   void initState() {
@@ -196,18 +233,23 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   void _clearForm() {
-    _kgController.clear(); _totalController.clear(); _displayController.clear(); 
-    _rejectController.clear(); _purchaseController.clear(); _salesController.clear();
+    _totalController.clear(); _displayController.clear(); _rejectController.clear();
+    _currentKg = 0.0; _currentPurchase = 0.0; _currentSales = 0.0;
     _calculateBalance();
   }
 
   Future<void> _saveData() async {
     setState(() => _isLoading = true);
     Map<String, dynamic> bodyData = {
-      'date': DateFormat('yyyy-MM-dd').format(_selectedDate), 'kg': double.tryParse(_kgController.text) ?? 0.0,
-      'total_packs': int.tryParse(_totalController.text) ?? 0, 'display_packs': int.tryParse(_displayController.text) ?? 0,
-      'rejected_amount': int.tryParse(_rejectController.text) ?? 0, 'rejected_unit': _rejectUnit, 'balance_packs': _balance,
-      'purchase_rm': double.tryParse(_purchaseController.text) ?? 0.0, 'sales_rm': double.tryParse(_salesController.text) ?? 0.0,
+      'date': DateFormat('yyyy-MM-dd').format(_selectedDate),
+      'kg': _currentKg,
+      'total_packs': int.tryParse(_totalController.text) ?? 0,
+      'display_packs': int.tryParse(_displayController.text) ?? 0,
+      'rejected_amount': int.tryParse(_rejectController.text) ?? 0,
+      'rejected_unit': _rejectUnit,
+      'balance_packs': _balance,
+      'purchase_rm': _currentPurchase,
+      'sales_rm': _currentSales,
     };
 
     try {
@@ -218,21 +260,25 @@ class _EntryPageState extends State<EntryPage> {
         response = await http.put(Uri.parse('$apiUrl/$_editingId'), headers: {'Content-Type': 'application/json', 'Accept': 'application/json'}, body: json.encode(bodyData)).timeout(const Duration(seconds: 5));
       }
       if (response.statusCode == 201 || response.statusCode == 200) {
-        _clearForm(); setState(() => _editingId = null); _fetchTodaysEntries(); 
+        _clearForm(); setState(() => _editingId = null); _fetchTodaysEntries();
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_editingId == null ? 'Entry Saved!' : 'Entry Updated!')));
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Connection failed.')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connection failed.')));
     } finally { setState(() => _isLoading = false); }
   }
 
   void _editEntry(InventoryItem item) {
     setState(() {
-      _editingId = item.id; _selectedDate = item.date; _kgController.text = item.kg.toString();
+      _editingId = item.id; _selectedDate = item.date;
       _totalController.text = item.totalPacks.toString(); _displayController.text = item.displayPacks.toString();
       _rejectController.text = item.rejectedAmount.toString(); _rejectUnit = item.rejectedUnit;
-      _purchaseController.text = item.purchaseRM.toString(); _salesController.text = item.salesRM.toString();
       _balance = item.balancePacks;
+      
+      // Preserve hidden finance data
+      _currentKg = item.kg;
+      _currentPurchase = item.purchaseRM;
+      _currentSales = item.salesRM;
     });
   }
 
@@ -274,17 +320,11 @@ class _EntryPageState extends State<EntryPage> {
           if (_editingId != null)
             Container(padding: const EdgeInsets.all(8), margin: const EdgeInsets.only(bottom: 16), color: Colors.orange[100], child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('EDITING MODE', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange)), IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() => _editingId = null); _clearForm(); })])),
 
-          TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Weight (kg)', border: OutlineInputBorder())),
-          const SizedBox(height: 12),
           TextField(controller: _totalController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Total Packs', border: OutlineInputBorder())),
           const SizedBox(height: 12),
           TextField(controller: _displayController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Display Packs', border: OutlineInputBorder())),
           const SizedBox(height: 12),
           Row(children: [Expanded(flex: 2, child: TextField(controller: _rejectController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Rejected Amount', border: OutlineInputBorder()))), const SizedBox(width: 12), Expanded(flex: 1, child: DropdownButtonFormField<String>(value: _rejectUnit, decoration: const InputDecoration(border: OutlineInputBorder()), items: ['Packs', 'Kg'].map((String value) => DropdownMenuItem<String>(value: value, child: Text(value))).toList(), onChanged: (newValue) => setState(() { _rejectUnit = newValue!; _calculateBalance(); })))]),
-          const SizedBox(height: 24),
-          const Text('Financials', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
-          const SizedBox(height: 8),
-          Row(children: [Expanded(child: TextField(controller: _purchaseController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Purchase (RM)', border: OutlineInputBorder()))), const SizedBox(width: 12), Expanded(child: TextField(controller: _salesController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Total Sales (RM)', border: OutlineInputBorder())))]),
           const SizedBox(height: 24),
           Container(padding: const EdgeInsets.all(16), color: Colors.green[50], child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Balance Packs:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), Text('$_balance', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green))])),
           const SizedBox(height: 16),
@@ -292,14 +332,231 @@ class _EntryPageState extends State<EntryPage> {
           const SizedBox(height: 32),
           const Text('Today\'s Entries', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          _todaysEntries.isEmpty ? const Padding(padding: EdgeInsets.all(16.0), child: Text("No entries for this date yet.", style: TextStyle(fontStyle: FontStyle.italic))) : ListView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _todaysEntries.length, itemBuilder: (context, index) { final item = _todaysEntries[index]; return Card(child: ListTile(title: Text('${item.kg} kg | ${item.totalPacks} Packs'), subtitle: Text('Buy: RM${item.purchaseRM.toStringAsFixed(0)} | Sell: RM${item.salesRM.toStringAsFixed(0)}'), trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _editEntry(item)), IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteEntry(item.id))]))); })
+          _todaysEntries.isEmpty ? const Padding(padding: EdgeInsets.all(16.0), child: Text("No entries for this date yet.", style: TextStyle(fontStyle: FontStyle.italic))) : ListView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _todaysEntries.length, itemBuilder: (context, index) { 
+            final item = _todaysEntries[index]; 
+            return Card(
+              child: ListTile(
+                title: Text('Total: ${item.totalPacks} | Display: ${item.displayPacks} | Balance: ${item.balancePacks}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), 
+                subtitle: Text('Rejected: ${item.rejectedAmount} ${item.rejectedUnit}'), 
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _editEntry(item)), IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteEntry(item.id))])
+              )
+            ); 
+          })
         ],
       ),
     );
   }
 }
 
-// --- 4. SUMMARY PAGE ---
+// --- 4. FINANCE PAGE (NEW) ---
+class FinancePage extends StatefulWidget {
+  const FinancePage({Key? key}) : super(key: key);
+  @override
+  State<FinancePage> createState() => _FinancePageState();
+}
+
+class _FinancePageState extends State<FinancePage> {
+  DateTime _purchaseDate = DateTime.now();
+  DateTime _salesDate = DateTime.now();
+
+  final _kgController = TextEditingController();
+  final _purchaseRmController = TextEditingController();
+  final _salesPriceController = TextEditingController(text: '6.99');
+  
+  int _salesDisplayedPacks = 0;
+  double _totalSalesCalculated = 0.0;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchPurchaseData();
+    _fetchSalesData();
+  }
+
+  Future<InventoryItem?> _getFirstEntryForDate(DateTime date) async {
+    try {
+      final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        List<dynamic> data = json.decode(response.body);
+        List<InventoryItem> allData = data.map((json) => InventoryItem.fromJson(json)).toList();
+        var dailyEntries = allData.where((item) => item.date.year == date.year && item.date.month == date.month && item.date.day == date.day).toList();
+        if (dailyEntries.isNotEmpty) return dailyEntries.first;
+      }
+    } catch (e) { print(e); }
+    return null;
+  }
+
+  Future<void> _fetchPurchaseData() async {
+    InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
+    setState(() {
+      if (item != null) {
+        _kgController.text = item.kg == 0 ? '' : item.kg.toString();
+        _purchaseRmController.text = item.purchaseRM == 0 ? '' : item.purchaseRM.toString();
+      } else {
+        _kgController.clear();
+        _purchaseRmController.clear();
+      }
+    });
+  }
+
+  Future<void> _fetchSalesData() async {
+    InventoryItem? item = await _getFirstEntryForDate(_salesDate);
+    setState(() {
+      _salesDisplayedPacks = item?.displayPacks ?? 0;
+      _calculateSales();
+    });
+  }
+
+  void _calculateSales() {
+    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
+    setState(() {
+      _totalSalesCalculated = _salesDisplayedPacks * price;
+    });
+  }
+
+  Future<void> _savePurchase() async {
+    setState(() => _isLoading = true);
+    double kg = double.tryParse(_kgController.text) ?? 0.0;
+    double purchaseRm = double.tryParse(_purchaseRmController.text) ?? 0.0;
+    
+    InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
+    try {
+      if (item != null) {
+        Map<String, dynamic> body = item.toJson();
+        body['kg'] = kg;
+        body['purchase_rm'] = purchaseRm;
+        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      } else {
+        Map<String, dynamic> body = {
+          'date': DateFormat('yyyy-MM-dd').format(_purchaseDate), 'kg': kg, 'purchase_rm': purchaseRm,
+          'total_packs': 0, 'display_packs': 0, 'rejected_amount': 0, 'rejected_unit': 'Packs', 'balance_packs': 0, 'sales_rm': 0
+        };
+        await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Saved!')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving purchase.')));
+    } finally { setState(() => _isLoading = false); }
+  }
+
+  Future<void> _saveSales() async {
+    setState(() => _isLoading = true);
+    InventoryItem? item = await _getFirstEntryForDate(_salesDate);
+    
+    if (item != null) {
+      try {
+        Map<String, dynamic> body = item.toJson();
+        body['sales_rm'] = _totalSalesCalculated;
+        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!')));
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.')));
+      }
+    } else {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No entry found for this date. Please create an entry first.')));
+    }
+    setState(() => _isLoading = false);
+  }
+
+  String _formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // PURCHASE CARD
+          Card(
+            elevation: 3,
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Record Purchase', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Date: ${_formatDate(_purchaseDate)}', style: const TextStyle(fontSize: 16)),
+                      TextButton.icon(
+                        onPressed: () async {
+                          final picked = await showDatePicker(context: context, initialDate: _purchaseDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
+                          if (picked != null) { setState(() => _purchaseDate = picked); _fetchPurchaseData(); }
+                        }, 
+                        icon: const Icon(Icons.calendar_month), label: const Text('Change')
+                      )
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount (KG)', border: OutlineInputBorder())),
+                  const SizedBox(height: 12),
+                  TextField(controller: _purchaseRmController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Purchase Price (RM)', border: OutlineInputBorder())),
+                  const SizedBox(height: 16),
+                  SizedBox(width: double.infinity, height: 45, child: ElevatedButton(onPressed: _isLoading ? null : _savePurchase, child: const Text('Save Purchase'))),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 24),
+          
+          // SALES CARD
+          Card(
+            elevation: 3,
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Record Sales', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Date: ${_formatDate(_salesDate)}', style: const TextStyle(fontSize: 16)),
+                      TextButton.icon(
+                        onPressed: () async {
+                          final picked = await showDatePicker(context: context, initialDate: _salesDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
+                          if (picked != null) { setState(() => _salesDate = picked); _fetchSalesData(); }
+                        }, 
+                        icon: const Icon(Icons.calendar_month), label: const Text('Change')
+                      )
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8)),
+                    child: Text('Displayed Packs: $_salesDisplayedPacks', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(controller: _salesPriceController, keyboardType: const TextInputType.numberWithOptions(decimal: true), onChanged: (val) => _calculateSales(), decoration: const InputDecoration(labelText: 'Price Per Pack (RM)', border: OutlineInputBorder())),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Total Sales:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text('RM ${_totalSalesCalculated.toStringAsFixed(2)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(width: double.infinity, height: 45, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.green), onPressed: _isLoading ? null : _saveSales, child: const Text('Save Sales'))),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// --- 5. SUMMARY PAGE ---
 class SummaryPage extends StatefulWidget {
   const SummaryPage({Key? key}) : super(key: key);
   @override
@@ -346,7 +603,6 @@ class _SummaryPageState extends State<SummaryPage> {
     }).toList();
   }
 
-  // --- NEW: PDF GENERATOR LOGIC ---
   Future<void> _generatePdf(Map<String, Map<String, dynamic>> dailyTotals, double tKg, int tPacks, int tDisplay, int tBalance, double tPurchase, double tSales, double tProfit) async {
     final pdf = pw.Document();
 
@@ -358,29 +614,23 @@ class _SummaryPageState extends State<SummaryPage> {
           return [
             pw.Center(child: pw.Text('SUMMARY OF NANGKA SALES', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold))),
             pw.SizedBox(height: 20),
-            
-            // Loop through the daily breakdown for the PDF
             ...dailyTotals.entries.map((e) {
               double dProfit = e.value['sales'] - e.value['purchase'];
               return _buildPdfBlock(e.key, e.value['kg'], e.value['packs'], e.value['display'], e.value['balance'], e.value['purchase'], e.value['sales'], dProfit);
             }).toList(),
-            
             pw.SizedBox(height: 20),
-            // The Grand Total Block for the PDF
             _buildPdfBlock('TOTAL', tKg, tPacks, tDisplay, tBalance, tPurchase, tSales, tProfit, isTotal: true),
           ];
         },
       ),
     );
 
-    // This opens the phone's native PDF viewer / Print dialog
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => pdf.save(),
       name: 'Nangka_Summary.pdf'
     );
   }
 
-  // --- NEW: PDF WIDGET BUILDERS ---
   pw.Widget _buildPdfBlock(String title, double kg, int packs, int display, int balance, double purchase, double sales, double profit, {bool isTotal = false}) {
     return pw.Container(
       margin: const pw.EdgeInsets.only(bottom: 12),
@@ -398,9 +648,9 @@ class _SummaryPageState extends State<SummaryPage> {
           _buildPdfRow('Packs', '$packs'),
           _buildPdfRow('Display', '$display'),
           _buildPdfRow('Balance', '$balance'),
-          _buildPdfRow('Purchase', purchase.toStringAsFixed(0)),
+          if (isTotal) _buildPdfRow('Purchase', purchase.toStringAsFixed(0)),
           _buildPdfRow('Sales', sales.toStringAsFixed(0)),
-          _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), isProfit: true, profitValue: profit),
+          if (isTotal) _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), isProfit: true, profitValue: profit),
         ],
       ),
     );
@@ -426,7 +676,6 @@ class _SummaryPageState extends State<SummaryPage> {
     );
   }
 
-  // UI WIDGET BUILDERS (For the Screen)
   Widget _buildDataRow(String label, String value, {Color? valueColor}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
@@ -442,9 +691,13 @@ class _SummaryPageState extends State<SummaryPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: isTotal ? Colors.black : Colors.blueGrey[800])), const Divider(thickness: 1),
-          _buildDataRow('Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)), _buildDataRow('Packs', '$packs'), _buildDataRow('Display', '$display'),
-          _buildDataRow('Balance', '$balance'), _buildDataRow('Purchase', purchase.toStringAsFixed(0)), _buildDataRow('Sales', sales.toStringAsFixed(0)),
-          _buildDataRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), valueColor: profit >= 0 ? Colors.green : Colors.red),
+          _buildDataRow('Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)), 
+          _buildDataRow('Packs', '$packs'), 
+          _buildDataRow('Display', '$display'),
+          _buildDataRow('Balance', '$balance'), 
+          if (isTotal) _buildDataRow('Purchase', purchase.toStringAsFixed(0)), 
+          _buildDataRow('Sales', sales.toStringAsFixed(0)),
+          if (isTotal) _buildDataRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), valueColor: profit >= 0 ? Colors.green : Colors.red),
         ],
       ),
     );
@@ -504,7 +757,6 @@ class _SummaryPageState extends State<SummaryPage> {
               if (filteredData.isNotEmpty) _buildSummaryBlock('TOTAL', tKg, tPacks, tDisplay, tBalance, tPurchase, tSales, tProfit, isTotal: true),
               
               const SizedBox(height: 24),
-              // --- UPDATED EXPORT BUTTON ---
               if (filteredData.isNotEmpty)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)),
