@@ -95,15 +95,15 @@ class InventoryItem {
     return InventoryItem(
       id: json['id'],
       date: DateTime.parse(json['date']),
-      kg: double.parse((json['kg'] ?? 0).toString()),
-      purchaseKg: double.parse((json['purchase_kg'] ?? 0).toString()), 
-      totalPacks: json['total_packs'] ?? 0,
-      displayPacks: json['display_packs'] ?? 0,
-      rejectedAmount: json['rejected_amount'] ?? 0,
+      kg: double.tryParse((json['kg'] ?? 0).toString()) ?? 0.0,
+      purchaseKg: double.tryParse((json['purchase_kg'] ?? 0).toString()) ?? 0.0, 
+      totalPacks: int.tryParse(json['total_packs']?.toString() ?? '0') ?? 0,
+      displayPacks: int.tryParse(json['display_packs']?.toString() ?? '0') ?? 0,
+      rejectedAmount: int.tryParse(json['rejected_amount']?.toString() ?? '0') ?? 0,
       rejectedUnit: json['rejected_unit'] ?? 'Packs',
-      balancePacks: json['balance_packs'] ?? 0,
-      purchaseRM: double.parse((json['purchase_rm'] ?? 0).toString()),
-      salesRM: double.parse((json['sales_rm'] ?? 0).toString()),
+      balancePacks: int.tryParse(json['balance_packs']?.toString() ?? '0') ?? 0,
+      purchaseRM: double.tryParse((json['purchase_rm'] ?? 0).toString()) ?? 0.0,
+      salesRM: double.tryParse((json['sales_rm'] ?? 0).toString()) ?? 0.0,
     );
   }
 
@@ -602,10 +602,14 @@ class _FinancePageState extends State<FinancePage> {
           }).toList();
         }
 
+        int sumOfPacks = 0;
+        for (var i in filtered) {
+          sumOfPacks += i.displayPacks;
+        }
+
         setState(() {
           _currentSalesItems = filtered;
-          // Calculate sum of Display Packs in the selected range/day
-          _salesDisplayedPacks = filtered.fold(0, (sum, item) => sum + item.displayPacks);
+          _salesDisplayedPacks = sumOfPacks;
           _calculateSales();
         });
       }
@@ -630,10 +634,8 @@ class _FinancePageState extends State<FinancePage> {
     double price = double.tryParse(_salesPriceController.text) ?? 0.0;
     
     try {
-      // Update each item in the day/range
       for (var item in _currentSalesItems) {
         Map<String, dynamic> body = item.toJson();
-        // Calculation per item: Individual Displayed Packs * Unified Price
         body['sales_rm'] = item.displayPacks * price;
         await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       }
@@ -670,7 +672,6 @@ class _FinancePageState extends State<FinancePage> {
 
   @override
   Widget build(BuildContext context) {
-    // Current recorded sales for the view
     double recordedSalesTotal = _currentSalesItems.fold(0.0, (sum, item) => sum + item.salesRM);
 
     return Center(
@@ -761,36 +762,32 @@ class _FinancePageState extends State<FinancePage> {
                           const Text('Record Sales', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
                         ],
                       ),
-                      const Divider(height: 32, thickness: 1.5),
+                      const Divider(height: 24, thickness: 1.5),
                       
-                      // Day/Range Header
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8),
-                                decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8)),
-                                child: DropdownButtonHideUnderline(
-                                  child: DropdownButton<String>(
-                                    value: _salesMode,
-                                    items: ['Day', 'Range'].map((String value) => DropdownMenuItem<String>(value: value, child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)))).toList(),
-                                    onChanged: (newValue) {
-                                      setState(() => _salesMode = newValue!);
-                                      _fetchSalesData();
-                                    }
-                                  ),
-                                ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[200], 
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade300)
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _salesMode,
+                                icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF2E7D32)),
+                                items: ['Day', 'Range'].map((String value) => DropdownMenuItem<String>(
+                                  value: value, 
+                                  child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold))
+                                )).toList(),
+                                onChanged: (newValue) {
+                                  setState(() => _salesMode = newValue!);
+                                  _fetchSalesData();
+                                }
                               ),
-                              const SizedBox(width: 12),
-                              Text(
-                                _salesMode == 'Day' 
-                                  ? _formatDate(_salesDate) 
-                                  : (_salesDateRange != null ? '${_formatDate(_salesDateRange!.start)} - ${_formatDate(_salesDateRange!.end)}' : 'Select Range'),
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)
-                              ),
-                            ],
+                            ),
                           ),
                           TextButton.icon(
                             onPressed: () async {
@@ -802,21 +799,42 @@ class _FinancePageState extends State<FinancePage> {
                                 if (picked != null) { setState(() => _salesDateRange = picked); _fetchSalesData(); }
                               }
                             }, 
-                            icon: const Icon(Icons.calendar_month, color: Color(0xFF2E7D32)), label: const Text('Change', style: TextStyle(color: Color(0xFF2E7D32)))
+                            icon: const Icon(Icons.calendar_month, color: Color(0xFF2E7D32)), 
+                            label: const Text('Change Date', style: TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.bold))
                           )
                         ],
                       ),
-
                       const SizedBox(height: 12),
+                      
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(color: Colors.blueGrey.shade50, borderRadius: BorderRadius.circular(8)),
+                        child: Text(
+                          _salesMode == 'Day' 
+                            ? 'Selected Day: ${_formatDate(_salesDate)}' 
+                            : 'Selected Range: ${_salesDateRange != null ? "${_formatDate(_salesDateRange!.start)} to ${_formatDate(_salesDateRange!.end)}" : "No Range Selected"}',
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueGrey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(color: const Color(0xFFFFCA28).withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFFFCA28))),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        child: Column(
                           children: [
-                            const Text('Packs Displayed in period:', style: TextStyle(fontSize: 16)),
-                            Text('$_salesDisplayedPacks', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32))),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Total Displayed Packs:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                Text('$_salesDisplayedPacks', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32))),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text('Aggregated from ${_currentSalesItems.length} entries in this period', style: TextStyle(fontSize: 12, color: Colors.grey[700], fontStyle: FontStyle.italic)),
                           ],
                         ),
                       ),
@@ -851,7 +869,7 @@ class _FinancePageState extends State<FinancePage> {
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red), 
-                                onPressed: () => _deleteFin(false) // false means deleting sales
+                                onPressed: () => _deleteFin(false) 
                               ),
                             ],
                           )
@@ -974,9 +992,10 @@ class _SummaryPageState extends State<SummaryPage> {
           _buildPdfRow('Packs', '$packs'),
           _buildPdfRow('Display', '$display'),
           _buildPdfRow('Balance', '$balance'),
-          if (isTotal) _buildPdfRow('Purchase Cost', purchase.toStringAsFixed(0)),
-          _buildPdfRow('Sales', sales.toStringAsFixed(0)),
-          if (isTotal) _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(0)}' : profit.toStringAsFixed(0), isProfit: true, profitValue: profit),
+          // FIXED: Changed all 0 formatting to 2 to preserve decimal places exactly as they are.
+          if (isTotal) _buildPdfRow('Purchase Cost', purchase.toStringAsFixed(2)),
+          _buildPdfRow('Sales', sales.toStringAsFixed(2)),
+          if (isTotal) _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(2)}' : profit.toStringAsFixed(2), isProfit: true, profitValue: profit),
         ],
       ),
     );
