@@ -11,7 +11,6 @@ import 'package:printing/printing.dart';
 const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
 
 void main() async {
-  // Required so SharedPreferences can talk to the native code before the app starts
   WidgetsFlutterBinding.ensureInitialized(); 
   final prefs = await SharedPreferences.getInstance();
   final bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
@@ -29,14 +28,12 @@ class NangkaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Nangka Inventory',
       theme: ThemeData(
-        // --- NANGKA COLOR PALETTE ---
-        primaryColor: const Color(0xFF2E7D32), // Deep Nangka Green
-        scaffoldBackgroundColor: const Color(0xFFF9FBE7), // Very light yellow-green tint
+        primaryColor: const Color(0xFF2E7D32),
+        scaffoldBackgroundColor: const Color(0xFFF9FBE7),
         colorScheme: ColorScheme.fromSwatch().copyWith(
           primary: const Color(0xFF2E7D32),
-          secondary: const Color(0xFFFFCA28), // Vibrant Nangka Yellow
+          secondary: const Color(0xFFFFCA28),
         ),
-        // --- GLOBAL INPUT DESIGN (PC Friendly) ---
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
@@ -54,7 +51,6 @@ class NangkaApp extends StatelessWidget {
             borderSide: const BorderSide(color: Color(0xFF2E7D32), width: 2),
           ),
         ),
-        // --- GLOBAL BUTTON DESIGN ---
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF2E7D32),
@@ -64,14 +60,12 @@ class NangkaApp extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 16),
           ),
         ),
-        // --- GLOBAL CARD DESIGN ---
         cardTheme: CardThemeData(
           elevation: 3,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.symmetric(vertical: 6),
         ),
       ),
-      // Automatically route user based on their saved login state
       home: isLoggedIn ? const MainDashboard() : const LoginPage(),
     );
   }
@@ -143,7 +137,7 @@ class _LoginPageState extends State<LoginPage> {
   void _login() async {
     if (_usernameController.text == 'admin' && _passwordController.text == 'admin') {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isLoggedIn', true); // Save login token
+      await prefs.setBool('isLoggedIn', true);
       
       if (mounted) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
@@ -159,7 +153,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        // PC FRIENDLY CONSTRAINT
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
@@ -169,7 +162,7 @@ class _LoginPageState extends State<LoginPage> {
               children: [
                 Container(
                   padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
+                  decoration: const BoxDecoration(
                     color: Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 5)],
@@ -191,8 +184,8 @@ class _LoginPageState extends State<LoginPage> {
                   child: ElevatedButton(
                     onPressed: _login, 
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFCA28), // Yellow Button
-                      foregroundColor: const Color(0xFF2E7D32), // Green Text
+                      backgroundColor: const Color(0xFFFFCA28),
+                      foregroundColor: const Color(0xFF2E7D32),
                     ),
                     child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
                   )
@@ -222,7 +215,7 @@ class _MainDashboardState extends State<MainDashboard> {
 
   void _logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('isLoggedIn'); // Delete login token
+    await prefs.remove('isLoggedIn');
     
     if (mounted) {
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage()));
@@ -428,7 +421,6 @@ class _EntryPageState extends State<EntryPage> {
   @override
   Widget build(BuildContext context) {
     return Center(
-      // PC FRIENDLY CONSTRAINT
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 800),
         child: SingleChildScrollView(
@@ -514,19 +506,24 @@ class FinancePage extends StatefulWidget {
 }
 
 class _FinancePageState extends State<FinancePage> {
+  // Purchase controls
   DateTime _purchaseDate = DateTime.now();
-  DateTime _salesDate = DateTime.now();
-
   final _kgController = TextEditingController(); 
   final _purchaseRmController = TextEditingController();
+  InventoryItem? _currentPurchaseItem;
+
+  // Sales controls
+  String _salesMode = 'Day'; // 'Day' or 'Range'
+  DateTime _salesDate = DateTime.now();
+  DateTimeRange? _salesDateRange;
+  
   final _salesPriceController = TextEditingController(text: '6.99');
   
+  List<InventoryItem> _currentSalesItems = [];
   int _salesDisplayedPacks = 0;
   double _totalSalesCalculated = 0.0;
+  
   bool _isLoading = false;
-
-  InventoryItem? _currentPurchaseItem;
-  InventoryItem? _currentSalesItem;
 
   @override
   void initState() {
@@ -535,6 +532,7 @@ class _FinancePageState extends State<FinancePage> {
     _fetchSalesData();
   }
 
+  // ==== PURCHASE METHODS ====
   Future<InventoryItem?> _getFirstEntryForDate(DateTime date) async {
     try {
       final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
@@ -552,28 +550,8 @@ class _FinancePageState extends State<FinancePage> {
     InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
     setState(() {
       _currentPurchaseItem = item;
-      _clearPurchaseForm();
-    });
-  }
-
-  void _clearPurchaseForm() {
-    _kgController.clear();
-    _purchaseRmController.clear();
-  }
-
-  Future<void> _fetchSalesData() async {
-    InventoryItem? item = await _getFirstEntryForDate(_salesDate);
-    setState(() {
-      _currentSalesItem = item;
-      _salesDisplayedPacks = item?.displayPacks ?? 0;
-      _calculateSales();
-    });
-  }
-
-  void _calculateSales() {
-    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
-    setState(() {
-      _totalSalesCalculated = _salesDisplayedPacks * price;
+      _kgController.clear();
+      _purchaseRmController.clear();
     });
   }
 
@@ -596,66 +574,105 @@ class _FinancePageState extends State<FinancePage> {
         };
         await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
       }
-
-      // Force UI to show new data immediately before fetching
-      setState(() {
-        if (_currentPurchaseItem != null) {
-          _currentPurchaseItem = InventoryItem(
-            id: _currentPurchaseItem!.id, date: _currentPurchaseItem!.date, kg: _currentPurchaseItem!.kg, purchaseKg: purchaseKg, totalPacks: _currentPurchaseItem!.totalPacks, displayPacks: _currentPurchaseItem!.displayPacks, rejectedAmount: _currentPurchaseItem!.rejectedAmount, rejectedUnit: _currentPurchaseItem!.rejectedUnit, balancePacks: _currentPurchaseItem!.balancePacks, purchaseRM: purchaseRm, salesRM: _currentPurchaseItem!.salesRM
-          );
-        }
-      });
-
       await _fetchPurchaseData(); 
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Saved!'), backgroundColor: Color(0xFF2E7D32)));
     } catch (e) {
-      print(e);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving purchase.'), backgroundColor: Colors.red));
     } finally { setState(() => _isLoading = false); }
   }
 
-  Future<void> _deleteFin(int id, bool isPurchase) async {
+  // ==== SALES METHODS ====
+  Future<void> _fetchSalesData() async {
     setState(() => _isLoading = true);
-    var item = isPurchase ? _currentPurchaseItem : _currentSalesItem;
-    if (item != null) {
-      try {
-        Map<String, dynamic> body = item.toJson();
-        if (isPurchase) { body['purchase_kg'] = 0.0; body['purchase_rm'] = 0.0; } else { body['sales_rm'] = 0.0; }
-        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-        isPurchase ? await _fetchPurchaseData() : await _fetchSalesData();
-      } catch (e) { print(e); }
+    try {
+      final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        List<dynamic> data = json.decode(response.body);
+        List<InventoryItem> allData = data.map((json) => InventoryItem.fromJson(json)).toList();
+
+        List<InventoryItem> filtered = [];
+        if (_salesMode == 'Day') {
+          filtered = allData.where((item) => item.date.year == _salesDate.year && item.date.month == _salesDate.month && item.date.day == _salesDate.day).toList();
+        } else if (_salesMode == 'Range' && _salesDateRange != null) {
+          DateTime start = DateTime(_salesDateRange!.start.year, _salesDateRange!.start.month, _salesDateRange!.start.day);
+          DateTime end = DateTime(_salesDateRange!.end.year, _salesDateRange!.end.month, _salesDateRange!.end.day);
+          filtered = allData.where((item) {
+            DateTime itemDay = DateTime(item.date.year, item.date.month, item.date.day);
+            return (itemDay.isAtSameMomentAs(start) || itemDay.isAfter(start)) && (itemDay.isAtSameMomentAs(end) || itemDay.isBefore(end));
+          }).toList();
+        }
+
+        setState(() {
+          _currentSalesItems = filtered;
+          // Calculate sum of Display Packs in the selected range/day
+          _salesDisplayedPacks = filtered.fold(0, (sum, item) => sum + item.displayPacks);
+          _calculateSales();
+        });
+      }
+    } catch (e) {
+      print(e);
+    } finally {
+      setState(() => _isLoading = false);
     }
-    setState(() => _isLoading = false);
+  }
+
+  void _calculateSales() {
+    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
+    setState(() {
+      _totalSalesCalculated = _salesDisplayedPacks * price;
+    });
   }
 
   Future<void> _saveSales() async {
-    if (_currentSalesItem == null) return;
+    if (_currentSalesItems.isEmpty) return;
     setState(() => _isLoading = true);
     
+    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
+    
     try {
-      Map<String, dynamic> body = _currentSalesItem!.toJson();
-      body['sales_rm'] = _totalSalesCalculated;
-      await http.put(Uri.parse('$apiUrl/${_currentSalesItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      
-      // Force UI to show new data immediately before fetching
-      setState(() {
-        _currentSalesItem = InventoryItem(
-            id: _currentSalesItem!.id, date: _currentSalesItem!.date, kg: _currentSalesItem!.kg, purchaseKg: _currentSalesItem!.purchaseKg, totalPacks: _currentSalesItem!.totalPacks, displayPacks: _currentSalesItem!.displayPacks, rejectedAmount: _currentSalesItem!.rejectedAmount, rejectedUnit: _currentSalesItem!.rejectedUnit, balancePacks: _currentSalesItem!.balancePacks, purchaseRM: _currentSalesItem!.purchaseRM, salesRM: _totalSalesCalculated
-        );
-      });
-
+      // Update each item in the day/range
+      for (var item in _currentSalesItems) {
+        Map<String, dynamic> body = item.toJson();
+        // Calculation per item: Individual Displayed Packs * Unified Price
+        body['sales_rm'] = item.displayPacks * price;
+        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      }
       await _fetchSalesData(); 
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!'), backgroundColor: Color(0xFF2E7D32)));
     } catch (e) {
-      print(e);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.'), backgroundColor: Colors.red));
     } finally { setState(() => _isLoading = false); }
+  }
+
+  // ==== COMMON ====
+  Future<void> _deleteFin(bool isPurchase) async {
+    setState(() => _isLoading = true);
+    try {
+      if (isPurchase && _currentPurchaseItem != null) {
+        Map<String, dynamic> body = _currentPurchaseItem!.toJson();
+        body['purchase_kg'] = 0.0; 
+        body['purchase_rm'] = 0.0;
+        await http.put(Uri.parse('$apiUrl/${_currentPurchaseItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+        await _fetchPurchaseData();
+      } else if (!isPurchase && _currentSalesItems.isNotEmpty) {
+        for (var item in _currentSalesItems) {
+          Map<String, dynamic> body = item.toJson();
+          body['sales_rm'] = 0.0;
+          await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+        }
+        await _fetchSalesData();
+      }
+    } catch (e) { print(e); }
+    setState(() => _isLoading = false);
   }
 
   String _formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
 
   @override
   Widget build(BuildContext context) {
+    // Current recorded sales for the view
+    double recordedSalesTotal = _currentSalesItems.fold(0.0, (sum, item) => sum + item.salesRM);
+
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 800),
@@ -715,14 +732,9 @@ class _FinancePageState extends State<FinancePage> {
                                   Text('Cost: RM ${_currentPurchaseItem!.purchaseRM.toStringAsFixed(2)}', style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.w600)),
                                 ],
                               ),
-                              Row(
-                                children: [
-                                  // REMOVED EDIT BUTTON HERE
-                                  IconButton(
-                                    icon: const Icon(Icons.delete, color: Colors.red), 
-                                    onPressed: () => _deleteFin(_currentPurchaseItem!.id, true)
-                                  ),
-                                ],
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red), 
+                                onPressed: () => _deleteFin(true)
                               )
                             ],
                           )
@@ -746,23 +758,55 @@ class _FinancePageState extends State<FinancePage> {
                         children: [
                           const Icon(Icons.trending_up, color: Color(0xFF2E7D32)),
                           const SizedBox(width: 8),
-                          const Text('Record Daily Sales', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
+                          const Text('Record Sales', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
                         ],
                       ),
                       const Divider(height: 32, thickness: 1.5),
+                      
+                      // Day/Range Header
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('Date: ${_formatDate(_salesDate)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8)),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: _salesMode,
+                                    items: ['Day', 'Range'].map((String value) => DropdownMenuItem<String>(value: value, child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)))).toList(),
+                                    onChanged: (newValue) {
+                                      setState(() => _salesMode = newValue!);
+                                      _fetchSalesData();
+                                    }
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                _salesMode == 'Day' 
+                                  ? _formatDate(_salesDate) 
+                                  : (_salesDateRange != null ? '${_formatDate(_salesDateRange!.start)} - ${_formatDate(_salesDateRange!.end)}' : 'Select Range'),
+                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)
+                              ),
+                            ],
+                          ),
                           TextButton.icon(
                             onPressed: () async {
-                              final picked = await showDatePicker(context: context, initialDate: _salesDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
-                              if (picked != null) { setState(() => _salesDate = picked); _fetchSalesData(); }
+                              if (_salesMode == 'Day') {
+                                final picked = await showDatePicker(context: context, initialDate: _salesDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
+                                if (picked != null) { setState(() => _salesDate = picked); _fetchSalesData(); }
+                              } else {
+                                final picked = await showDateRangePicker(context: context, firstDate: DateTime(2020), lastDate: DateTime(2101), initialDateRange: _salesDateRange);
+                                if (picked != null) { setState(() => _salesDateRange = picked); _fetchSalesData(); }
+                              }
                             }, 
                             icon: const Icon(Icons.calendar_month, color: Color(0xFF2E7D32)), label: const Text('Change', style: TextStyle(color: Color(0xFF2E7D32)))
                           )
                         ],
                       ),
+
                       const SizedBox(height: 12),
                       Container(
                         width: double.infinity,
@@ -771,7 +815,7 @@ class _FinancePageState extends State<FinancePage> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Packs Displayed:', style: TextStyle(fontSize: 16)),
+                            const Text('Packs Displayed in period:', style: TextStyle(fontSize: 16)),
                             Text('$_salesDisplayedPacks', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32))),
                           ],
                         ),
@@ -789,7 +833,7 @@ class _FinancePageState extends State<FinancePage> {
                       const SizedBox(height: 24),
                       SizedBox(width: double.infinity, height: 50, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCA28), foregroundColor: const Color(0xFF2E7D32)), onPressed: _isLoading ? null : _saveSales, child: const Text('SAVE SALES', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))),
 
-                      if (_currentSalesItem != null && _currentSalesItem!.salesRM > 0) ...[
+                      if (recordedSalesTotal > 0) ...[
                         const SizedBox(height: 20),
                         Container(
                           padding: const EdgeInsets.all(16),
@@ -802,12 +846,12 @@ class _FinancePageState extends State<FinancePage> {
                                 children: [
                                   const Text('Recorded Revenue', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                                   const SizedBox(height: 4),
-                                  Text('Total: RM ${_currentSalesItem!.salesRM.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.w600)),
+                                  Text('Total: RM ${recordedSalesTotal.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.w600)),
                                 ],
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red), 
-                                onPressed: () => _deleteFin(_currentSalesItem!.id, false)
+                                onPressed: () => _deleteFin(false) // false means deleting sales
                               ),
                             ],
                           )
@@ -1018,7 +1062,6 @@ class _SummaryPageState extends State<SummaryPage> {
 
         List<InventoryItem> filteredData = _filterData(snapshot.data ?? []);
         
-        // --- ADDED SORTING: Forces Chronological Order ---
         filteredData.sort((a, b) => a.date.compareTo(b.date));
         
         Map<String, Map<String, dynamic>> dailyTotals = {};
