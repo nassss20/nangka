@@ -2,1181 +2,632 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-const String apiUrl = 'https://nangka-api.onrender.com/api/inventories';
+const String apiUrl = 'https://nangka-api.onrender.com/api'; 
 
+// ==========================================
+// 1. DATA MODELS
+// ==========================================
+class Location {
+  final int id; final String name; final double defaultPrice;
+  Location({required this.id, required this.name, required this.defaultPrice});
+  factory Location.fromJson(Map<String, dynamic> json) => Location(id: json['id'], name: json['name'], defaultPrice: double.tryParse(json['default_price'].toString()) ?? 0.0);
+}
+
+class InventoryItem {
+  final int id; final DateTime date; final String locationName; final double kg; final int totalPacks;
+  final int displayPacks; final int rejectedAmount; final String rejectedUnit; final int balancePacks;
+  InventoryItem({required this.id, required this.date, required this.locationName, required this.kg, required this.totalPacks, required this.displayPacks, required this.rejectedAmount, required this.rejectedUnit, required this.balancePacks});
+  factory InventoryItem.fromJson(Map<String, dynamic> json) => InventoryItem(id: json['id'], date: DateTime.parse(json['date']), locationName: json['location_name'] ?? '-', kg: double.tryParse((json['kg'] ?? 0).toString()) ?? 0.0, totalPacks: int.tryParse(json['total_packs']?.toString() ?? '0') ?? 0, displayPacks: int.tryParse(json['display_packs']?.toString() ?? '0') ?? 0, rejectedAmount: int.tryParse(json['rejected_amount']?.toString() ?? '0') ?? 0, rejectedUnit: json['rejected_unit'] ?? 'Packs', balancePacks: int.tryParse(json['balance_packs']?.toString() ?? '0') ?? 0);
+}
+
+class SaleItem {
+  final int id; final DateTime date; final String? customLocation; final int productionPacks; final int actualPacks; final double price; final Location? location;
+  SaleItem({required this.id, required this.date, this.customLocation, required this.productionPacks, required this.actualPacks, required this.price, this.location});
+  factory SaleItem.fromJson(Map<String, dynamic> json) => SaleItem(id: json['id'], date: DateTime.parse(json['date']), customLocation: json['custom_location'], productionPacks: json['production_packs'] ?? 0, actualPacks: json['actual_packs'] ?? 0, price: double.tryParse(json['price'].toString()) ?? 0.0, location: json['location'] != null ? Location.fromJson(json['location']) : null);
+  String get locationName => location?.name ?? customLocation ?? '-';
+  double get productionRM => productionPacks * price;
+  double get actualRM => actualPacks * price;
+  double get differenceRM => actualRM - productionRM;
+}
+
+class PurchaseItem {
+  final int id; final DateTime date; final String itemName; final int quantity; final String unit; final double price;
+  PurchaseItem({required this.id, required this.date, required this.itemName, required this.quantity, required this.unit, required this.price});
+  factory PurchaseItem.fromJson(Map<String, dynamic> json) => PurchaseItem(id: json['id'], date: DateTime.parse(json['date']), itemName: json['item_name'], quantity: json['quantity'] ?? 1, unit: json['unit'] ?? '-', price: double.tryParse(json['price'].toString()) ?? 0.0);
+}
+
+class ClosingItem {
+  final int id; final DateTime date; final String itemName; final int? pcs; final double? kg; final int? packs; final double price;
+  ClosingItem({required this.id, required this.date, required this.itemName, this.pcs, this.kg, this.packs, required this.price});
+  factory ClosingItem.fromJson(Map<String, dynamic> json) => ClosingItem(id: json['id'], date: DateTime.parse(json['date']), itemName: json['item_name'], pcs: json['pcs'], kg: json['kg'] != null ? double.tryParse(json['kg'].toString()) : null, packs: json['packs'], price: double.tryParse(json['price'].toString()) ?? 0.0);
+}
+
+class Employee {
+  final int id; final String name; final String? position;
+  Employee({required this.id, required this.name, this.position});
+  factory Employee.fromJson(Map<String, dynamic> json) => Employee(id: json['id'], name: json['name'], position: json['position']);
+}
+
+class SalaryItem {
+  final int id; final DateTime date; final double amount; final Employee? employee;
+  SalaryItem({required this.id, required this.date, required this.amount, this.employee});
+  factory SalaryItem.fromJson(Map<String, dynamic> json) => SalaryItem(id: json['id'], date: DateTime.parse(json['date']), amount: double.tryParse(json['amount'].toString()) ?? 0.0, employee: json['employee'] != null ? Employee.fromJson(json['employee']) : null);
+}
+
+class ExpenseItem {
+  final int id; final DateTime date; final String itemName; final int quantity; final double price;
+  ExpenseItem({required this.id, required this.date, required this.itemName, required this.quantity, required this.price});
+  factory ExpenseItem.fromJson(Map<String, dynamic> json) => ExpenseItem(id: json['id'], date: DateTime.parse(json['date']), itemName: json['item_name'], quantity: json['quantity'] ?? 1, price: double.tryParse(json['price'].toString()) ?? 0.0);
+}
+
+// ==========================================
+// 2. STATE MANAGEMENT & SESSION
+// ==========================================
+class AppState extends ChangeNotifier {
+  DateTime summaryStartDate = DateTime.now().subtract(const Duration(days: 7));
+  DateTime summaryEndDate = DateTime.now();
+  String summaryFilterType = 'Range';
+  String summaryDisplayType = 'Stock Entry';
+
+  void updateSummaryFilter(String type, DateTime start, DateTime end) {
+    summaryFilterType = type; summaryStartDate = start; summaryEndDate = end; notifyListeners();
+  }
+  void updateSummaryDisplayType(String type) {
+    summaryDisplayType = type; notifyListeners();
+  }
+}
+
+class SessionWrapper extends StatefulWidget {
+  final Widget child;
+  const SessionWrapper({Key? key, required this.child}) : super(key: key);
+  @override State<SessionWrapper> createState() => _SessionWrapperState();
+}
+
+class _SessionWrapperState extends State<SessionWrapper> {
+  Timer? _inactivityTimer; Timer? _countdownTimer;
+
+  @override void initState() { super.initState(); _resetInactivityTimer(); }
+
+  void _resetInactivityTimer() {
+    _inactivityTimer?.cancel(); _countdownTimer?.cancel();
+    _inactivityTimer = Timer(const Duration(minutes: 30), _showTimeoutWarning);
+  }
+
+  void _showTimeoutWarning() {
+    int countdown = 7;
+    showDialog(
+      context: context, barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            _countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (timer) {
+              if (countdown > 0) setState(() => countdown--);
+              else { timer.cancel(); Navigator.of(dialogContext).pop(); _performLogout(); }
+            });
+            return AlertDialog(
+              title: const Text('Session Expiring'),
+              content: Text('You have been inactive. Automatically logging out in $countdown seconds.'),
+              actions: [
+                TextButton(onPressed: () { _countdownTimer?.cancel(); Navigator.of(dialogContext).pop(); _performLogout(); }, child: const Text('Log Out', style: TextStyle(color: Colors.red))),
+                ElevatedButton(onPressed: () { _countdownTimer?.cancel(); Navigator.of(dialogContext).pop(); _resetInactivityTimer(); }, child: const Text('Keep Logged In')),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _performLogout() async {
+    final prefs = await SharedPreferences.getInstance(); await prefs.remove('isLoggedIn');
+    if (mounted) Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context) => const LoginPage()), (route) => false);
+  }
+
+  @override void dispose() { _inactivityTimer?.cancel(); _countdownTimer?.cancel(); super.dispose(); }
+  @override Widget build(BuildContext context) {
+    return Listener(behavior: HitTestBehavior.translucent, onPointerDown: (_) => _resetInactivityTimer(), onPointerMove: (_) => _resetInactivityTimer(), child: widget.child);
+  }
+}
+
+// ==========================================
+// 3. MAIN & LOGIN
+// ==========================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized(); 
   final prefs = await SharedPreferences.getInstance();
   final bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
   
-  runApp(NangkaApp(isLoggedIn: isLoggedIn));
+  runApp(MultiProvider(providers: [ChangeNotifierProvider(create: (_) => AppState())], child: NangkaApp(isLoggedIn: isLoggedIn)));
 }
 
 class NangkaApp extends StatelessWidget {
   final bool isLoggedIn;
   const NangkaApp({Key? key, required this.isLoggedIn}) : super(key: key);
 
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Nangka Inventory',
+      debugShowCheckedModeBanner: false, title: 'Nangka Inventory',
       theme: ThemeData(
-        primaryColor: const Color(0xFF2E7D32),
-        scaffoldBackgroundColor: const Color(0xFFF9FBE7),
-        colorScheme: ColorScheme.fromSwatch().copyWith(
-          primary: const Color(0xFF2E7D32),
-          secondary: const Color(0xFFFFCA28),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: BorderSide(color: Colors.grey.shade300),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: BorderSide(color: Colors.grey.shade300),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Color(0xFF2E7D32), width: 2),
-          ),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF2E7D32),
-            foregroundColor: Colors.white,
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-        ),
-        cardTheme: CardThemeData(
-          elevation: 3,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          margin: const EdgeInsets.symmetric(vertical: 6),
-        ),
+        primaryColor: const Color(0xFF2E7D32), scaffoldBackgroundColor: const Color(0xFFF9FBE7),
+        colorScheme: ColorScheme.fromSwatch().copyWith(primary: const Color(0xFF2E7D32), secondary: const Color(0xFFFFCA28)),
+        inputDecorationTheme: InputDecorationTheme(filled: true, fillColor: Colors.white, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)), focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF2E7D32), width: 2))),
+        elevatedButtonTheme: ElevatedButtonThemeData(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white, elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), padding: const EdgeInsets.symmetric(vertical: 16))),
+        cardTheme: CardThemeData(elevation: 3, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), margin: const EdgeInsets.symmetric(vertical: 6)),
       ),
-      home: isLoggedIn ? const MainDashboard() : const LoginPage(),
+      home: SessionWrapper(child: isLoggedIn ? const MainDashboard() : const LoginPage()),
     );
   }
 }
 
-// --- DATA MODEL ---
-class InventoryItem {
-  final int id;
-  final DateTime date;
-  final double kg;
-  final double purchaseKg; 
-  final int totalPacks;
-  final int displayPacks;
-  final int rejectedAmount;
-  final String rejectedUnit;
-  final int balancePacks;
-  final double purchaseRM;
-  final double salesRM;
-
-  InventoryItem({
-    required this.id, required this.date, required this.kg, required this.purchaseKg, 
-    required this.totalPacks, required this.displayPacks, required this.rejectedAmount, 
-    required this.rejectedUnit, required this.balancePacks, required this.purchaseRM, required this.salesRM,
-  });
-
-  factory InventoryItem.fromJson(Map<String, dynamic> json) {
-    return InventoryItem(
-      id: json['id'],
-      date: DateTime.parse(json['date']),
-      kg: double.tryParse((json['kg'] ?? 0).toString()) ?? 0.0,
-      purchaseKg: double.tryParse((json['purchase_kg'] ?? 0).toString()) ?? 0.0, 
-      totalPacks: int.tryParse(json['total_packs']?.toString() ?? '0') ?? 0,
-      displayPacks: int.tryParse(json['display_packs']?.toString() ?? '0') ?? 0,
-      rejectedAmount: int.tryParse(json['rejected_amount']?.toString() ?? '0') ?? 0,
-      rejectedUnit: json['rejected_unit'] ?? 'Packs',
-      balancePacks: int.tryParse(json['balance_packs']?.toString() ?? '0') ?? 0,
-      purchaseRM: double.tryParse((json['purchase_rm'] ?? 0).toString()) ?? 0.0,
-      salesRM: double.tryParse((json['sales_rm'] ?? 0).toString()) ?? 0.0,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'date': DateFormat('yyyy-MM-dd').format(date),
-      'kg': kg,
-      'purchase_kg': purchaseKg, 
-      'total_packs': totalPacks,
-      'display_packs': displayPacks,
-      'rejected_amount': rejectedAmount,
-      'rejected_unit': rejectedUnit,
-      'balance_packs': balancePacks,
-      'purchase_rm': purchaseRM,
-      'sales_rm': salesRM,
-    };
-  }
-}
-
-// --- 1. LOGIN PAGE ---
 class LoginPage extends StatefulWidget {
   const LoginPage({Key? key}) : super(key: key);
-  @override
-  State<LoginPage> createState() => _LoginPageState();
+  @override State<LoginPage> createState() => _LoginPageState();
 }
-
 class _LoginPageState extends State<LoginPage> {
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
-
+  final _uCtrl = TextEditingController(); final _pCtrl = TextEditingController();
   void _login() async {
-    if (_usernameController.text == 'admin' && _passwordController.text == 'admin') {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isLoggedIn', true);
-      
-      if (mounted) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
-      }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Invalid Credentials'), backgroundColor: Colors.red,
-      ));
-    }
+    if (_uCtrl.text == 'admin' && _pCtrl.text == 'admin') {
+      final prefs = await SharedPreferences.getInstance(); await prefs.setBool('isLoggedIn', true);
+      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainDashboard()));
+    } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Credentials'), backgroundColor: Colors.red)); }
   }
-
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: Padding(
-            padding: const EdgeInsets.all(32.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 5)],
-                  ),
-                  child: Image.asset('assets/nangka-logo.png', height: 100),
-                ),
-                const SizedBox(height: 32),
-                const Text('Nangka System', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
-                const SizedBox(height: 8),
-                Text('Inventory & Sales Management Portal', style: TextStyle(fontSize: 16, color: Colors.grey[600]), textAlign: TextAlign.center),
-                const SizedBox(height: 32),
-                TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person))),
-                const SizedBox(height: 16),
-                TextField(controller: _passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock))),
-                const SizedBox(height: 32),
-                SizedBox(
-                  width: double.infinity, 
-                  height: 55, 
-                  child: ElevatedButton(
-                    onPressed: _login, 
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFCA28),
-                      foregroundColor: const Color(0xFF2E7D32),
-                    ),
-                    child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2))
-                  )
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      bottomNavigationBar: const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Text('© nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 13)),
-      ),
+      body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: Padding(padding: const EdgeInsets.all(32.0), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Container(padding: const EdgeInsets.all(16), decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]), child: Image.asset('assets/nangka-logo.png', height: 100)),
+        const SizedBox(height: 32), const Text('Nangka System', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
+        const SizedBox(height: 32), TextField(controller: _uCtrl, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person))),
+        const SizedBox(height: 16), TextField(controller: _pCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock))),
+        const SizedBox(height: 32), SizedBox(width: double.infinity, height: 55, child: ElevatedButton(onPressed: _login, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCA28), foregroundColor: const Color(0xFF2E7D32)), child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))))
+      ])))),
     );
   }
 }
 
-// --- 2. MAIN DASHBOARD ---
 class MainDashboard extends StatefulWidget {
   const MainDashboard({Key? key}) : super(key: key);
-  @override
-  State<MainDashboard> createState() => _MainDashboardState();
+  @override State<MainDashboard> createState() => _MainDashboardState();
 }
-
 class _MainDashboardState extends State<MainDashboard> {
   int _currentIndex = 0;
-
-  void _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('isLoggedIn');
-    
-    if (mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage()));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final List<Widget> screens = [
-      EntryPage(key: UniqueKey()),
-      FinancePage(key: UniqueKey()),
-      SummaryPage(key: UniqueKey())
-    ];
+  void _logout() async { final prefs = await SharedPreferences.getInstance(); await prefs.remove('isLoggedIn'); if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginPage())); }
+  
+  @override Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          children: [
-            Image.asset('assets/nangka-logo.png', height: 30),
-            const SizedBox(width: 12),
-            const Text('Nangka System', style: TextStyle(fontWeight: FontWeight.bold)),
-          ],
-        ),
-        backgroundColor: const Color(0xFF2E7D32),
-        foregroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout)
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(child: screens[_currentIndex]),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 8.0),
-            color: Colors.white,
-            child: const Text('© nsrnshr 2026', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.grey)),
-          )
-        ],
-      ),
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -2))],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          selectedItemColor: const Color(0xFF2E7D32),
-          unselectedItemColor: Colors.grey[500],
-          backgroundColor: Colors.white,
-          elevation: 0,
-          type: BottomNavigationBarType.fixed,
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.edit_document), label: 'Entry'),
-            BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: 'Finance'),
-            BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'Summary')
-          ],
-        ),
+      appBar: AppBar(title: Row(children: [Image.asset('assets/nangka-logo.png', height: 30), const SizedBox(width: 12), const Text('Nangka System', style: TextStyle(fontWeight: FontWeight.bold))]), backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white, elevation: 0, actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _logout)]),
+      body: IndexedStack(index: _currentIndex, children: const [EntryPage(), FinancePage(), SummaryPage()]),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex, onTap: (index) => setState(() => _currentIndex = index), selectedItemColor: const Color(0xFF2E7D32), unselectedItemColor: Colors.grey, type: BottomNavigationBarType.fixed,
+        items: const [BottomNavigationBarItem(icon: Icon(Icons.edit_document), label: 'Entry'), BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: 'Finance'), BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'Summary')],
       ),
     );
   }
 }
 
-// --- 3. DATA ENTRY PAGE ---
-class EntryPage extends StatefulWidget {
-  const EntryPage({Key? key}) : super(key: key);
-  @override
-  State<EntryPage> createState() => _EntryPageState();
-}
+// ==========================================
+// 4. DATA ENTRY PAGE
+// ==========================================
+class EntryPage extends StatefulWidget { const EntryPage({Key? key}) : super(key: key); @override State<EntryPage> createState() => _EntryPageState(); }
+class _EntryPageState extends State<EntryPage> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
 
-class _EntryPageState extends State<EntryPage> {
-  DateTime _selectedDate = DateTime.now();
-  final _kgController = TextEditingController();
-  final _totalController = TextEditingController();
-  final _displayController = TextEditingController();
-  final _rejectController = TextEditingController();
-  String _rejectUnit = 'Packs';
-  int _balance = 0;
-  bool _isLoading = false;
-  int? _editingId;
-  List<InventoryItem> _todaysEntries = [];
+  DateTime _date = DateTime.now();
+  String? _selectedLocation;
+  final List<String> _locations = ['Mydin Meru', 'Mydin RTC', 'Giant Tambun', 'Cold Storage Sentra Mall', 'Wholesale', 'Others'];
+  final _customLocCtrl = TextEditingController();
+  final _kgCtrl = TextEditingController(); final _totalCtrl = TextEditingController(); final _displayCtrl = TextEditingController(); final _rejectCtrl = TextEditingController();
+  String _rejectUnit = 'Packs'; int _balance = 0; bool _isLoading = false;
 
-  double _currentPurchaseKg = 0.0;
-  double _currentPurchaseRM = 0.0;
-  double _currentSalesRM = 0.0;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchTodaysEntries();
+  void _calc() {
+    int t = int.tryParse(_totalCtrl.text) ?? 0; int d = int.tryParse(_displayCtrl.text) ?? 0; int r = int.tryParse(_rejectCtrl.text) ?? 0;
+    int bal = t - d; if (_rejectUnit == 'Packs') bal -= r;
+    setState(() => _balance = bal < 0 ? 0 : bal);
   }
 
-  Future<void> _fetchTodaysEntries() async {
-    try {
-      final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        List<dynamic> data = json.decode(response.body);
-        List<InventoryItem> allData = data.map((json) => InventoryItem.fromJson(json)).toList();
-        setState(() {
-          _todaysEntries = allData.where((item) => item.date.year == _selectedDate.year && item.date.month == _selectedDate.month && item.date.day == _selectedDate.day).toList();
-        });
-      }
-    } catch (e) { print("Error fetching list: $e"); }
-  }
-
-  Future<void> _pickDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context, 
-      initialDate: _selectedDate, 
-      firstDate: DateTime(2020), 
-      lastDate: DateTime(2101),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(primary: Color(0xFF2E7D32), onPrimary: Colors.white, onSurface: Colors.black),
-          ),
-          child: child!,
-        );
-      },
-    );
-    if (picked != null && picked != _selectedDate) {
-      setState(() { _selectedDate = picked; _editingId = null; });
-      _clearForm(); _fetchTodaysEntries();
-    }
-  }
-
-  void _calculateBalance() {
-    int total = int.tryParse(_totalController.text) ?? 0;
-    int display = int.tryParse(_displayController.text) ?? 0;
-    int reject = int.tryParse(_rejectController.text) ?? 0;
-    int calculatedBalance = total - display;
-    if (_rejectUnit == 'Packs') calculatedBalance -= reject;
-    setState(() => _balance = calculatedBalance < 0 ? 0 : calculatedBalance);
-  }
-
-  void _clearForm() {
-    _kgController.clear(); _totalController.clear(); _displayController.clear(); _rejectController.clear();
-    _currentPurchaseKg = 0.0; _currentPurchaseRM = 0.0; _currentSalesRM = 0.0;
-    _calculateBalance();
-  }
-
-  Future<void> _saveData() async {
+  Future<void> _save() async {
     setState(() => _isLoading = true);
-    Map<String, dynamic> bodyData = {
-      'date': DateFormat('yyyy-MM-dd').format(_selectedDate),
-      'kg': double.tryParse(_kgController.text) ?? 0.0,
-      'purchase_kg': _currentPurchaseKg,
-      'total_packs': int.tryParse(_totalController.text) ?? 0,
-      'display_packs': int.tryParse(_displayController.text) ?? 0,
-      'rejected_amount': int.tryParse(_rejectController.text) ?? 0,
-      'rejected_unit': _rejectUnit,
-      'balance_packs': _balance,
-      'purchase_rm': _currentPurchaseRM,
-      'sales_rm': _currentSalesRM,
+    String locName = _selectedLocation == 'Others' ? _customLocCtrl.text : (_selectedLocation ?? '-');
+    Map<String, dynamic> body = {
+      'date': DateFormat('yyyy-MM-dd').format(_date), 'location_name': locName, 'kg': double.tryParse(_kgCtrl.text) ?? 0.0,
+      'total_packs': int.tryParse(_totalCtrl.text) ?? 0, 'display_packs': int.tryParse(_displayCtrl.text) ?? 0,
+      'rejected_amount': int.tryParse(_rejectCtrl.text) ?? 0, 'rejected_unit': _rejectUnit, 'balance_packs': _balance,
     };
-
     try {
-      http.Response response;
-      if (_editingId == null) {
-        response = await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json', 'Accept': 'application/json'}, body: json.encode(bodyData)).timeout(const Duration(seconds: 5));
-      } else {
-        response = await http.put(Uri.parse('$apiUrl/$_editingId'), headers: {'Content-Type': 'application/json', 'Accept': 'application/json'}, body: json.encode(bodyData)).timeout(const Duration(seconds: 5));
-      }
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        _clearForm(); setState(() => _editingId = null); _fetchTodaysEntries();
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_editingId == null ? 'Entry Saved!' : 'Entry Updated!'), backgroundColor: const Color(0xFF2E7D32)));
-      }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connection failed.'), backgroundColor: Colors.red));
-    } finally { setState(() => _isLoading = false); }
+      await http.post(Uri.parse('$apiUrl/inventories'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
+      if (mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved!'), backgroundColor: Color(0xFF2E7D32))); _kgCtrl.clear(); _totalCtrl.clear(); _displayCtrl.clear(); _rejectCtrl.clear(); _customLocCtrl.clear(); setState(() { _balance = 0; }); }
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed.'), backgroundColor: Colors.red)); } 
+    finally { setState(() => _isLoading = false); }
   }
 
-  void _editEntry(InventoryItem item) {
-    setState(() {
-      _editingId = item.id; _selectedDate = item.date;
-      _kgController.text = item.kg == 0 ? '' : item.kg.toString();
-      _totalController.text = item.totalPacks.toString(); _displayController.text = item.displayPacks.toString();
-      _rejectController.text = item.rejectedAmount.toString(); _rejectUnit = item.rejectedUnit;
-      _balance = item.balancePacks;
-      _currentPurchaseKg = item.purchaseKg; _currentPurchaseRM = item.purchaseRM; _currentSalesRM = item.salesRM;
-    });
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16.0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Date: ${DateFormat('dd/MM/yyyy').format(_date)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))), OutlinedButton.icon(onPressed: () async { final d = await showDatePicker(context: context, initialDate: _date, firstDate: DateTime(2020), lastDate: DateTime(2101)); if (d != null) setState(() => _date = d); }, icon: const Icon(Icons.calendar_today, size: 18), label: const Text('Change Date'))]),
+      const SizedBox(height: 24),
+      DropdownButtonFormField<String>(decoration: const InputDecoration(labelText: 'Location', prefixIcon: Icon(Icons.location_on)), value: _selectedLocation, items: _locations.map((loc) => DropdownMenuItem(value: loc, child: Text(loc))).toList(), onChanged: (val) => setState(() => _selectedLocation = val)),
+      if (_selectedLocation == 'Others') ...[const SizedBox(height: 16), TextField(controller: _customLocCtrl, decoration: const InputDecoration(labelText: 'Enter Custom Location', prefixIcon: Icon(Icons.edit_location)))],
+      const SizedBox(height: 16), TextField(controller: _kgCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Processed (KG)', prefixIcon: Icon(Icons.scale))),
+      const SizedBox(height: 16), TextField(controller: _totalCtrl, keyboardType: TextInputType.number, onChanged: (_) => _calc(), decoration: const InputDecoration(labelText: 'Total Packs', prefixIcon: Icon(Icons.inventory_2))),
+      const SizedBox(height: 16), TextField(controller: _displayCtrl, keyboardType: TextInputType.number, onChanged: (_) => _calc(), decoration: const InputDecoration(labelText: 'Displayed Packs', prefixIcon: Icon(Icons.storefront))),
+      const SizedBox(height: 16), Row(children: [Expanded(flex: 2, child: TextField(controller: _rejectCtrl, keyboardType: TextInputType.number, onChanged: (_) => _calc(), decoration: const InputDecoration(labelText: 'Rejected', prefixIcon: Icon(Icons.delete_outline)))), const SizedBox(width: 12), Expanded(flex: 1, child: DropdownButtonFormField<String>(value: _rejectUnit, decoration: const InputDecoration(labelText: 'Unit'), items: ['Packs', 'Kg'].map((v) => DropdownMenuItem(value: v, child: Text(v))).toList(), onChanged: (v) => setState(() { _rejectUnit = v!; _calc(); }))) ]),
+      const SizedBox(height: 24), Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: const Color(0xFF2E7D32), borderRadius: BorderRadius.circular(12)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Balance Packs:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)), Text('$_balance', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFFFFCA28)))])),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, height: 55, child: ElevatedButton(onPressed: _isLoading ? null : _save, child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : const Text('SAVE ENTRY', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))))
+    ]))));
   }
+}
 
-  Future<void> _deleteEntry(int id) async {
-    bool confirm = await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Entry?'), content: const Text('Are you sure you want to permanently delete this record?'),
-        actions: [ TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete', style: TextStyle(color: Colors.red))) ],
+// ==========================================
+// 5. FINANCE PAGE
+// ==========================================
+class FinancePage extends StatefulWidget { const FinancePage({Key? key}) : super(key: key); @override State<FinancePage> createState() => _FinancePageState(); }
+class _FinancePageState extends State<FinancePage> with SingleTickerProviderStateMixin {
+  late TabController _tCtrl;
+  @override void initState() { super.initState(); _tCtrl = TabController(length: 5, vsync: this); }
+  @override Widget build(BuildContext context) {
+    return Column(children: [
+      Container(color: Colors.white, child: TabBar(controller: _tCtrl, isScrollable: true, labelColor: const Color(0xFF2E7D32), indicatorColor: const Color(0xFFFFCA28), tabs: const [Tab(icon: Icon(Icons.point_of_sale), text: 'Sales'), Tab(icon: Icon(Icons.shopping_cart), text: 'Purchase'), Tab(icon: Icon(Icons.assignment_turned_in), text: 'Closing'), Tab(icon: Icon(Icons.people), text: 'Salary'), Tab(icon: Icon(Icons.receipt_long), text: 'Expenses')])),
+      Expanded(child: TabBarView(controller: _tCtrl, children: const [SalesTab(), PurchaseTab(), ClosingTab(), SalaryTab(), ExpensesTab()]))
+    ]);
+  }
+}
+
+String formatVal(dynamic val) => (val == null || val == 0 || val == 0.0 || val == '') ? '-' : val.toString();
+
+// -- SHARED WIDGET FOR DATE ROW --
+Widget buildDateRow(BuildContext context, DateTime date, Function(DateTime) onDateChanged) {
+  return Row(
+    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    children: [
+      Text('Date: ${DateFormat('dd/MM/yyyy').format(date)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
+      OutlinedButton.icon(onPressed: () async { final d = await showDatePicker(context: context, initialDate: date, firstDate: DateTime(2020), lastDate: DateTime(2101)); if (d != null) onDateChanged(d); }, icon: const Icon(Icons.calendar_today, size: 16), label: const Text('Change')),
+    ],
+  );
+}
+
+// -- SHARED WIDGET FOR TABLE FILTER --
+Widget buildTableFilterRow(BuildContext context, DateTime start, DateTime end, Function(DateTime, DateTime) onDateFiltered) {
+  return Row(
+    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    children: [
+      Text('Showing: ${DateFormat('dd/MM').format(start)} - ${DateFormat('dd/MM').format(end)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+      TextButton.icon(
+        onPressed: () async { final picked = await showDateRangePicker(context: context, firstDate: DateTime(2020), lastDate: DateTime(2101), initialDateRange: DateTimeRange(start: start, end: end)); if (picked != null) onDateFiltered(picked.start, picked.end); },
+        icon: const Icon(Icons.filter_alt, size: 18), label: const Text('Filter Dates'),
       ),
-    ) ?? false;
+    ],
+  );
+}
 
-    if (confirm) {
-      try {
-        final response = await http.delete(Uri.parse('$apiUrl/$id')).timeout(const Duration(seconds: 5));
-        if (response.statusCode == 200) { _fetchTodaysEntries(); if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Deleted'))); }
-      } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed.'))); }
+// -- SALES TAB --
+class SalesTab extends StatefulWidget { const SalesTab({Key? key}) : super(key: key); @override State<SalesTab> createState() => _SalesTabState(); }
+class _SalesTabState extends State<SalesTab> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
+
+  DateTime _date = DateTime.now(); 
+  DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
+  int? _locId; 
+  // Safety fallback array in case DB is empty!
+  List<Location> _locs = [
+    Location(id: 1, name: 'Mydin Meru', defaultPrice: 6.99), Location(id: 2, name: 'Mydin RTC', defaultPrice: 6.99),
+    Location(id: 3, name: 'Giant Tambun', defaultPrice: 6.99), Location(id: 4, name: 'Cold Storage Sentra Mall', defaultPrice: 6.99),
+    Location(id: 5, name: 'Wholesale', defaultPrice: 6.99),
+  ]; 
+  List<SaleItem> _sales = [];
+  final _customCtrl = TextEditingController(); final _prodCtrl = TextEditingController(); final _actCtrl = TextEditingController(); final _priceCtrl = TextEditingController(text: '6.99');
+  
+  @override void initState() { super.initState(); _fetch(); }
+  Future<void> _fetch() async {
+    final r1 = await http.get(Uri.parse('$apiUrl/locations')); 
+    if (r1.statusCode == 200) {
+      var fetched = (json.decode(r1.body) as List).map((j) => Location.fromJson(j)).toList();
+      if (fetched.isNotEmpty) setState(() => _locs = fetched);
     }
+    final r2 = await http.get(Uri.parse('$apiUrl/sales')); if (r2.statusCode == 200) setState(() => _sales = (json.decode(r2.body) as List).map((j) => SaleItem.fromJson(j)).toList());
   }
+  
+  Future<void> _save() async {
+    double p = double.tryParse(_priceCtrl.text) ?? 6.99;
+    Location? selectedLoc = _locs.where((l) => l.id == _locId).firstOrNull;
 
-  String _formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 800),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('Date: ${_formatDate(_selectedDate)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
-                  OutlinedButton.icon(
-                    onPressed: () => _pickDate(context), 
-                    icon: const Icon(Icons.calendar_today, size: 18), 
-                    label: const Text('Change'),
-                    style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF2E7D32), side: const BorderSide(color: Color(0xFF2E7D32))),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              
-              if (_editingId != null)
-                Container(padding: const EdgeInsets.all(12), margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: const Color(0xFFFFCA28).withOpacity(0.3), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFFFCA28))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('EDITING MODE', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFB00020))), IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() => _editingId = null); _clearForm(); })])),
-
-              TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Daily Processed (KG)', prefixIcon: Icon(Icons.scale))),
-              const SizedBox(height: 16),
-              TextField(controller: _totalController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Total Packs Created', prefixIcon: Icon(Icons.inventory_2))),
-              const SizedBox(height: 16),
-              TextField(controller: _displayController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Displayed Packs', prefixIcon: Icon(Icons.storefront))),
-              const SizedBox(height: 16),
-              Row(children: [
-                Expanded(flex: 2, child: TextField(controller: _rejectController, keyboardType: TextInputType.number, onChanged: (val) => _calculateBalance(), decoration: const InputDecoration(labelText: 'Rejected Amount', prefixIcon: Icon(Icons.delete_outline)))), 
-                const SizedBox(width: 12), 
-                Expanded(flex: 1, child: DropdownButtonFormField<String>(value: _rejectUnit, decoration: const InputDecoration(labelText: 'Unit'), items: ['Packs', 'Kg'].map((String value) => DropdownMenuItem<String>(value: value, child: Text(value))).toList(), onChanged: (newValue) => setState(() { _rejectUnit = newValue!; _calculateBalance(); })))
-              ]),
-              const SizedBox(height: 24),
-              
-              Container(
-                padding: const EdgeInsets.all(20), 
-                decoration: BoxDecoration(color: const Color(0xFF2E7D32), borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: const Color(0xFF2E7D32).withOpacity(0.4), blurRadius: 8, offset: const Offset(0, 4))]), 
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween, 
-                  children: [
-                    const Text('Balance Packs:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)), 
-                    Text('$_balance', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFFFFCA28)))
-                  ]
-                )
-              ),
-              const SizedBox(height: 24),
-              
-              SizedBox(width: double.infinity, height: 55, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: _editingId == null ? const Color(0xFF2E7D32) : const Color(0xFFF57C00)), onPressed: _isLoading ? null : _saveData, child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(_editingId == null ? 'SAVE DAILY ENTRY' : 'UPDATE ENTRY', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1)))),
-              const SizedBox(height: 32),
-              
-              const Text('Today\'s Records', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
-              const Divider(thickness: 2),
-              const SizedBox(height: 8),
-              
-              _todaysEntries.isEmpty ? const Padding(padding: EdgeInsets.all(16.0), child: Text("No entries for this date yet.", style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey))) : ListView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _todaysEntries.length, itemBuilder: (context, index) { 
-                final item = _todaysEntries[index]; 
-                return Card(
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    leading: const CircleAvatar(backgroundColor: Color(0xFFF9FBE7), child: Icon(Icons.check_circle, color: Color(0xFF2E7D32))),
-                    title: Text('${item.kg} kg | Total: ${item.totalPacks} | Display: ${item.displayPacks}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), 
-                    subtitle: Text('Balance: ${item.balancePacks} | Rejected: ${item.rejectedAmount} ${item.rejectedUnit}'), 
-                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _editEntry(item)), IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteEntry(item.id))])
-                  )
-                ); 
-              })
-            ],
-          ),
-        ),
+    if (selectedLoc != null && p != selectedLoc.defaultPrice) {
+      bool update = await showDialog(context: context, builder: (c) => AlertDialog(title: const Text('Update Default?'), content: Text('Save RM $p as default for ${selectedLoc.name}?'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Yes'))])) ?? false;
+      if (update) await http.put(Uri.parse('$apiUrl/locations/${selectedLoc.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode({'default_price': p}));
+    }
+    
+    await http.post(Uri.parse('$apiUrl/sales'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'location_id': _locId == 0 ? null : _locId, 'custom_location': _locId == 0 ? _customCtrl.text : null, 'production_packs': int.tryParse(_prodCtrl.text) ?? 0, 'actual_packs': int.tryParse(_actCtrl.text) ?? 0, 'price': p}));
+    _prodCtrl.clear(); _actCtrl.clear(); _customCtrl.clear(); _fetch();
+  }
+  
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    var filtered = _sales.where((s) => s.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && s.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList();
+    
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      buildDateRow(context, _date, (d) => setState(() => _date = d)), const SizedBox(height: 24),
+      DropdownButtonFormField<int>(
+        decoration: const InputDecoration(labelText: 'Location', prefixIcon: Icon(Icons.location_on)), value: _locId, 
+        items: _locs.map((l) => DropdownMenuItem(value: l.id, child: Text(l.name))).toList()..add(const DropdownMenuItem(value: 0, child: Text('Others'))), 
+        onChanged: (v) { setState(() => _locId = v); if (v != null && v != 0) _priceCtrl.text = _locs.firstWhere((l) => l.id == v).defaultPrice.toString(); }
       ),
-    );
+      if (_locId == 0) Padding(padding: const EdgeInsets.only(top: 16), child: TextField(controller: _customCtrl, decoration: const InputDecoration(labelText: 'Enter Custom Location', prefixIcon: Icon(Icons.edit_location)))),
+      const SizedBox(height: 16), TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price per Pack (RM)', prefixIcon: Icon(Icons.attach_money))),
+      const SizedBox(height: 16), Row(children: [Expanded(child: TextField(controller: _prodCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Production Packs', prefixIcon: Icon(Icons.inventory)))), const SizedBox(width: 12), Expanded(child: TextField(controller: _actCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Actual Packs', prefixIcon: Icon(Icons.check_circle))))]),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE SALE RECORD'))),
+      const SizedBox(height: 32), const Text('Sales Table', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+      buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Location')), DataColumn(label: Text('Prod(RM)')), DataColumn(label: Text('Actual(RM)')), DataColumn(label: Text('Diff(RM)'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.locationName)), DataCell(Text(formatVal(s.productionRM))), DataCell(Text(formatVal(s.actualRM))), DataCell(Text(formatVal(s.differenceRM), style: TextStyle(color: s.differenceRM < 0 ? Colors.red : Colors.green, fontWeight: FontWeight.bold)))])).toList())))
+    ]))));
   }
 }
 
-// --- 4. FINANCE PAGE ---
-class FinancePage extends StatefulWidget {
-  const FinancePage({Key? key}) : super(key: key);
-  @override
-  State<FinancePage> createState() => _FinancePageState();
+// -- PURCHASE TAB --
+class PurchaseTab extends StatefulWidget { const PurchaseTab({Key? key}) : super(key: key); @override State<PurchaseTab> createState() => _PurchaseTabState(); }
+class _PurchaseTabState extends State<PurchaseTab> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
+
+  DateTime _date = DateTime.now(); DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
+  String? _item; final _items = ['Grade A Honey Jackfruit', 'Grade B Honey Jackfruit', 'Packing Material', 'Transportation', 'Others'];
+  final _customCtrl = TextEditingController(); final _qtyCtrl = TextEditingController(); final _unitCtrl = TextEditingController(); final _priceCtrl = TextEditingController(); List<PurchaseItem> _purchases = [];
+  @override void initState() { super.initState(); _fetch(); }
+  Future<void> _fetch() async { final res = await http.get(Uri.parse('$apiUrl/purchases')); if (res.statusCode == 200) setState(() => _purchases = (json.decode(res.body) as List).map((j) => PurchaseItem.fromJson(j)).toList()); }
+  Future<void> _save() async { await http.post(Uri.parse('$apiUrl/purchases'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _item == 'Others' ? _customCtrl.text : _item ?? '', 'quantity': int.tryParse(_qtyCtrl.text) ?? 1, 'unit': _unitCtrl.text.isEmpty ? '-' : _unitCtrl.text, 'price': double.tryParse(_priceCtrl.text) ?? 0.0})); _priceCtrl.clear(); _qtyCtrl.clear(); _unitCtrl.clear(); _customCtrl.clear(); _fetch(); }
+  
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    var filtered = _purchases.where((p) => p.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && p.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (prev, el) => prev + el.price);
+    
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      buildDateRow(context, _date, (d) => setState(() => _date = d)), const SizedBox(height: 24),
+      DropdownButtonFormField<String>(decoration: const InputDecoration(labelText: 'Item', prefixIcon: Icon(Icons.shopping_bag)), value: _item, items: _items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(), onChanged: (v) => setState(() => _item = v)),
+      if (_item == 'Others') Padding(padding: const EdgeInsets.only(top: 16), child: TextField(controller: _customCtrl, decoration: const InputDecoration(labelText: 'Custom Item Name', prefixIcon: Icon(Icons.edit)))),
+      const SizedBox(height: 16), Row(children: [Expanded(child: TextField(controller: _qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity', prefixIcon: Icon(Icons.numbers)))), const SizedBox(width: 12), Expanded(child: TextField(controller: _unitCtrl, decoration: const InputDecoration(labelText: 'Unit (e.g. Kg, Box)', prefixIcon: Icon(Icons.category))))]),
+      const SizedBox(height: 16), TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Price (RM)', prefixIcon: Icon(Icons.attach_money))),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE PURCHASE'))),
+      const SizedBox(height: 32), const Text('Purchase Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+      buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
+      Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Purchase for Period:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
+      const SizedBox(height: 16),
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty/Unit')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((p) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(p.date))), DataCell(Text(p.itemName)), DataCell(Text('${p.quantity} ${p.unit}')), DataCell(Text(p.price.toStringAsFixed(2)))])).toList())))
+    ]))));
+  }
 }
 
-class _FinancePageState extends State<FinancePage> {
-  // Purchase controls
-  DateTime _purchaseDate = DateTime.now();
-  final _kgController = TextEditingController(); 
-  final _purchaseRmController = TextEditingController();
-  InventoryItem? _currentPurchaseItem;
+// -- CLOSING TAB --
+class ClosingTab extends StatefulWidget { const ClosingTab({Key? key}) : super(key: key); @override State<ClosingTab> createState() => _ClosingTabState(); }
+class _ClosingTabState extends State<ClosingTab> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
 
-  // Sales controls
-  String _salesMode = 'Day'; // 'Day' or 'Range'
-  DateTime _salesDate = DateTime.now();
-  DateTimeRange? _salesDateRange;
+  DateTime _date = DateTime.now(); DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
+  String? _item; final _items = ['Grade A Honey Jackfruit', 'Grade B Honey Jackfruit', '400gm Honey Jackfruit', '350gm Honey Jackfruit', 'Packing Material', 'Others'];
+  final _customCtrl = TextEditingController(); final _pcsCtrl = TextEditingController(); final _kgCtrl = TextEditingController(); final _packsCtrl = TextEditingController(); final _priceCtrl = TextEditingController(); List<ClosingItem> _closings = [];
+  @override void initState() { super.initState(); _fetch(); }
+  Future<void> _fetch() async { final res = await http.get(Uri.parse('$apiUrl/closing-statements')); if (res.statusCode == 200) setState(() => _closings = (json.decode(res.body) as List).map((j) => ClosingItem.fromJson(j)).toList()); }
+  Future<void> _save() async { await http.post(Uri.parse('$apiUrl/closing-statements'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _item == 'Others' ? _customCtrl.text : _item ?? '', 'price': double.tryParse(_priceCtrl.text) ?? 0.0, 'pcs': int.tryParse(_pcsCtrl.text), 'kg': double.tryParse(_kgCtrl.text), 'packs': int.tryParse(_packsCtrl.text)})); _priceCtrl.clear(); _pcsCtrl.clear(); _kgCtrl.clear(); _packsCtrl.clear(); _customCtrl.clear(); _fetch(); }
   
-  final _salesPriceController = TextEditingController(text: '6.99');
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    var filtered = _closings.where((c) => c.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && c.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (prev, el) => prev + el.price);
+    
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      buildDateRow(context, _date, (d) => setState(() => _date = d)), const SizedBox(height: 24),
+      DropdownButtonFormField<String>(decoration: const InputDecoration(labelText: 'Item', prefixIcon: Icon(Icons.inventory_2)), value: _item, items: _items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(), onChanged: (v) => setState(() => _item = v)),
+      if (_item == 'Others') Padding(padding: const EdgeInsets.only(top: 16), child: TextField(controller: _customCtrl, decoration: const InputDecoration(labelText: 'Custom Item Name', prefixIcon: Icon(Icons.edit)))),
+      if (_item == 'Grade A Honey Jackfruit' || _item == 'Grade B Honey Jackfruit') Padding(padding: const EdgeInsets.only(top: 16), child: Row(children: [Expanded(child: TextField(controller: _pcsCtrl, decoration: const InputDecoration(labelText: 'Pcs', prefixIcon: Icon(Icons.widgets)))), const SizedBox(width: 12), Expanded(child: TextField(controller: _kgCtrl, decoration: const InputDecoration(labelText: 'KG', prefixIcon: Icon(Icons.scale))))])),
+      if (_item == 'Packing Material') Padding(padding: const EdgeInsets.only(top: 16), child: TextField(controller: _packsCtrl, decoration: const InputDecoration(labelText: 'Packs', prefixIcon: Icon(Icons.view_in_ar)))),
+      const SizedBox(height: 16), TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Price (RM)', prefixIcon: Icon(Icons.attach_money))),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE CLOSING STATEMENT'))),
+      const SizedBox(height: 32), const Text('Closing Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+      buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
+      Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Closing Value:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32)))]))),
+      const SizedBox(height: 16),
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Pcs/Kg/Pcks')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((c) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(c.date))), DataCell(Text(c.itemName)), DataCell(Text('${formatVal(c.pcs)} pcs / ${formatVal(c.kg)} kg / ${formatVal(c.packs)} pcks')), DataCell(Text(c.price.toStringAsFixed(2)))])).toList())))
+    ]))));
+  }
+}
+
+// -- SALARY TAB --
+class SalaryTab extends StatefulWidget { const SalaryTab({Key? key}) : super(key: key); @override State<SalaryTab> createState() => _SalaryTabState(); }
+class _SalaryTabState extends State<SalaryTab> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
+
+  DateTime _date = DateTime.now(); DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
+  int? _empId; List<Employee> _emps = []; List<SalaryItem> _sals = []; final _amtCtrl = TextEditingController();
+  @override void initState() { super.initState(); _fetch(); }
+  Future<void> _fetch() async { final r1 = await http.get(Uri.parse('$apiUrl/employees')); if(r1.statusCode==200) setState(()=>_emps=(json.decode(r1.body) as List).map((j)=>Employee.fromJson(j)).toList()); final r2 = await http.get(Uri.parse('$apiUrl/salaries')); if(r2.statusCode==200) setState(()=>_sals=(json.decode(r2.body) as List).map((j)=>SalaryItem.fromJson(j)).toList()); }
+  Future<void> _save() async { if (_empId != null) { await http.post(Uri.parse('$apiUrl/salaries'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'employee_id': _empId, 'amount': double.tryParse(_amtCtrl.text) ?? 0})); _amtCtrl.clear(); _fetch(); } }
+  Future<void> _addEmp() async { final name = TextEditingController(); final pos = TextEditingController(); await showDialog(context: context, builder: (c) => AlertDialog(title: const Text('New Employee'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')), const SizedBox(height:12), TextField(controller: pos, decoration: const InputDecoration(labelText: 'Position'))]), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Save'))])) == true ? () async { if (name.text.isNotEmpty) { await http.post(Uri.parse('$apiUrl/employees'), headers: {'Content-Type': 'application/json'}, body: json.encode({'name': name.text, 'position': pos.text})); _fetch(); } }() : null; }
   
-  List<InventoryItem> _currentSalesItems = [];
-  int _salesDisplayedPacks = 0;
-  double _totalSalesCalculated = 0.0;
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    var filtered = _sals.where((s) => s.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && s.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (p, e) => p + e.amount);
+    
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      buildDateRow(context, _date, (d) => setState(() => _date = d)), const SizedBox(height: 24),
+      Row(children: [Expanded(child: DropdownButtonFormField<int>(decoration: const InputDecoration(labelText: 'Employee', prefixIcon: Icon(Icons.person)), value: _empId, items: _emps.map((e) => DropdownMenuItem(value: e.id, child: Text(e.name))).toList(), onChanged: (v) => setState(() => _empId = v))), const SizedBox(width: 8), FloatingActionButton(onPressed: _addEmp, backgroundColor: const Color(0xFF2E7D32), child: const Icon(Icons.person_add, color: Colors.white))]),
+      const SizedBox(height: 16), TextField(controller: _amtCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Salary Amount (RM)', prefixIcon: Icon(Icons.attach_money))),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE SALARY'))),
+      const SizedBox(height: 32), const Text('Salary Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+      buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
+      Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Salary Payout:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
+      const SizedBox(height: 16),
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Employee')), DataColumn(label: Text('Amount(RM)'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.employee?.name ?? '-')), DataCell(Text(s.amount.toStringAsFixed(2)))])).toList())))
+    ]))));
+  }
+}
+
+// -- EXPENSES TAB --
+class ExpensesTab extends StatefulWidget { const ExpensesTab({Key? key}) : super(key: key); @override State<ExpensesTab> createState() => _ExpensesTabState(); }
+class _ExpensesTabState extends State<ExpensesTab> with AutomaticKeepAliveClientMixin {
+  @override bool get wantKeepAlive => true;
+
+  DateTime _date = DateTime.now(); DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
+  final _itemCtrl = TextEditingController(); final _qtyCtrl = TextEditingController(text: '1'); final _priceCtrl = TextEditingController(); List<ExpenseItem> _exps = [];
+  @override void initState() { super.initState(); _fetch(); }
+  Future<void> _fetch() async { final r = await http.get(Uri.parse('$apiUrl/expenses')); if(r.statusCode==200) setState(()=>_exps=(json.decode(r.body) as List).map((j)=>ExpenseItem.fromJson(j)).toList()); }
+  Future<void> _save() async { await http.post(Uri.parse('$apiUrl/expenses'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _itemCtrl.text, 'quantity': int.tryParse(_qtyCtrl.text) ?? 1, 'price': double.tryParse(_priceCtrl.text) ?? 0})); _itemCtrl.clear(); _priceCtrl.clear(); _fetch(); }
   
+  @override Widget build(BuildContext context) {
+    super.build(context);
+    var filtered = _exps.where((e) => e.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && e.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (p, e) => p + e.price);
+    
+    return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      buildDateRow(context, _date, (d) => setState(() => _date = d)), const SizedBox(height: 24),
+      TextField(controller: _itemCtrl, decoration: const InputDecoration(labelText: 'Item Name', prefixIcon: Icon(Icons.receipt_long))),
+      const SizedBox(height: 16), Row(children: [Expanded(child: TextField(controller: _qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity', prefixIcon: Icon(Icons.numbers)))), const SizedBox(width: 12), Expanded(child: TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Price (RM)', prefixIcon: Icon(Icons.attach_money))))]),
+      const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE EXPENSE'))),
+      const SizedBox(height: 32), const Text('Expenses Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+      buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
+      Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Expenses:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
+      const SizedBox(height: 16),
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((e) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(e.date))), DataCell(Text(e.itemName)), DataCell(Text(e.quantity.toString())), DataCell(Text(e.price.toStringAsFixed(2)))])).toList())))
+    ]))));
+  }
+}
+
+// ==========================================
+// 6. SUMMARY PAGE (PDF Export Only)
+// ==========================================
+class SummaryPage extends StatefulWidget { const SummaryPage({Key? key}) : super(key: key); @override State<SummaryPage> createState() => _SummaryPageState(); }
+class _SummaryPageState extends State<SummaryPage> {
   bool _isLoading = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _fetchPurchaseData();
-    _fetchSalesData();
-  }
+  List<InventoryItem> _invs = []; List<SaleItem> _sales = []; List<PurchaseItem> _purchases = []; 
+  List<ClosingItem> _closings = []; List<SalaryItem> _salaries = []; List<ExpenseItem> _expenses = [];
 
-  // ==== PURCHASE METHODS ====
-  Future<InventoryItem?> _getFirstEntryForDate(DateTime date) async {
-    try {
-      final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        List<dynamic> data = json.decode(response.body);
-        List<InventoryItem> allData = data.map((json) => InventoryItem.fromJson(json)).toList();
-        var dailyEntries = allData.where((item) => item.date.year == date.year && item.date.month == date.month && item.date.day == date.day).toList();
-        if (dailyEntries.isNotEmpty) return dailyEntries.first;
-      }
-    } catch (e) { print(e); }
-    return null;
-  }
+  @override void initState() { super.initState(); _fetchAllData(); }
 
-  Future<void> _fetchPurchaseData() async {
-    InventoryItem? item = await _getFirstEntryForDate(_purchaseDate);
-    setState(() {
-      _currentPurchaseItem = item;
-      _kgController.clear();
-      _purchaseRmController.clear();
-    });
-  }
-
-  Future<void> _savePurchase() async {
-    setState(() => _isLoading = true);
-    double purchaseKg = double.tryParse(_kgController.text) ?? 0.0;
-    double purchaseRm = double.tryParse(_purchaseRmController.text) ?? 0.0;
-    
-    try {
-      if (_currentPurchaseItem != null) {
-        Map<String, dynamic> body = _currentPurchaseItem!.toJson();
-        body['purchase_kg'] = purchaseKg;
-        body['purchase_rm'] = purchaseRm;
-        await http.put(Uri.parse('$apiUrl/${_currentPurchaseItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      } else {
-        Map<String, dynamic> body = {
-          'date': DateFormat('yyyy-MM-dd').format(_purchaseDate), 'kg': 0.0, 
-          'purchase_kg': purchaseKg, 'purchase_rm': purchaseRm,
-          'total_packs': 0, 'display_packs': 0, 'rejected_amount': 0, 'rejected_unit': 'Packs', 'balance_packs': 0, 'sales_rm': 0
-        };
-        await http.post(Uri.parse(apiUrl), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      }
-      await _fetchPurchaseData(); 
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Saved!'), backgroundColor: Color(0xFF2E7D32)));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving purchase.'), backgroundColor: Colors.red));
-    } finally { setState(() => _isLoading = false); }
-  }
-
-  // ==== SALES METHODS ====
-  Future<void> _fetchSalesData() async {
+  Future<void> _fetchAllData() async {
     setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        List<dynamic> data = json.decode(response.body);
-        List<InventoryItem> allData = data.map((json) => InventoryItem.fromJson(json)).toList();
+      var futures = await Future.wait([
+        http.get(Uri.parse('$apiUrl/inventories')), http.get(Uri.parse('$apiUrl/sales')),
+        http.get(Uri.parse('$apiUrl/purchases')), http.get(Uri.parse('$apiUrl/closing-statements')),
+        http.get(Uri.parse('$apiUrl/salaries')), http.get(Uri.parse('$apiUrl/expenses')),
+      ]);
+      setState(() {
+        if(futures[0].statusCode==200) _invs = (json.decode(futures[0].body) as List).map((j)=>InventoryItem.fromJson(j)).toList();
+        if(futures[1].statusCode==200) _sales = (json.decode(futures[1].body) as List).map((j)=>SaleItem.fromJson(j)).toList();
+        if(futures[2].statusCode==200) _purchases = (json.decode(futures[2].body) as List).map((j)=>PurchaseItem.fromJson(j)).toList();
+        if(futures[3].statusCode==200) _closings = (json.decode(futures[3].body) as List).map((j)=>ClosingItem.fromJson(j)).toList();
+        if(futures[4].statusCode==200) _salaries = (json.decode(futures[4].body) as List).map((j)=>SalaryItem.fromJson(j)).toList();
+        if(futures[5].statusCode==200) _expenses = (json.decode(futures[5].body) as List).map((j)=>ExpenseItem.fromJson(j)).toList();
+      });
+    } catch(e) { debugPrint(e.toString()); } 
+    finally { setState(() => _isLoading = false); }
+  }
 
-        List<InventoryItem> filtered = [];
-        if (_salesMode == 'Day') {
-          filtered = allData.where((item) => item.date.year == _salesDate.year && item.date.month == _salesDate.month && item.date.day == _salesDate.day).toList();
-        } else if (_salesMode == 'Range' && _salesDateRange != null) {
-          DateTime start = DateTime(_salesDateRange!.start.year, _salesDateRange!.start.month, _salesDateRange!.start.day);
-          DateTime end = DateTime(_salesDateRange!.end.year, _salesDateRange!.end.month, _salesDateRange!.end.day);
-          filtered = allData.where((item) {
-            DateTime itemDay = DateTime(item.date.year, item.date.month, item.date.day);
-            return (itemDay.isAtSameMomentAs(start) || itemDay.isAfter(start)) && (itemDay.isAtSameMomentAs(end) || itemDay.isBefore(end));
-          }).toList();
-        }
-
-        int sumOfPacks = 0;
-        for (var i in filtered) {
-          sumOfPacks += i.displayPacks;
-        }
-
-        setState(() {
-          _currentSalesItems = filtered;
-          _salesDisplayedPacks = sumOfPacks;
-          _calculateSales();
-        });
+  Future<void> _pickDate(AppState state) async {
+    if (state.summaryFilterType == 'Range') {
+      final picked = await showDateRangePicker(context: context, firstDate: DateTime(2020), lastDate: DateTime(2101), initialDateRange: DateTimeRange(start: state.summaryStartDate, end: state.summaryEndDate));
+      if (picked != null) state.updateSummaryFilter('Range', picked.start, picked.end);
+    } else {
+      final picked = await showDatePicker(context: context, initialDate: state.summaryStartDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
+      if (picked != null) {
+        if (state.summaryFilterType == 'Day') state.updateSummaryFilter('Day', picked, picked);
+        else state.updateSummaryFilter('Month', DateTime(picked.year, picked.month, 1), DateTime(picked.year, picked.month + 1, 0));
       }
-    } catch (e) {
-      print(e);
-    } finally {
-      setState(() => _isLoading = false);
     }
   }
 
-  void _calculateSales() {
-    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
-    setState(() {
-      _totalSalesCalculated = _salesDisplayedPacks * price;
-    });
-  }
-
-  Future<void> _saveSales() async {
-    if (_currentSalesItems.isEmpty) return;
-    setState(() => _isLoading = true);
-    
-    double price = double.tryParse(_salesPriceController.text) ?? 0.0;
-    
-    try {
-      for (var item in _currentSalesItems) {
-        Map<String, dynamic> body = item.toJson();
-        body['sales_rm'] = item.displayPacks * price;
-        await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-      }
-      await _fetchSalesData(); 
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sales Saved!'), backgroundColor: Color(0xFF2E7D32)));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error saving sales.'), backgroundColor: Colors.red));
-    } finally { setState(() => _isLoading = false); }
-  }
-
-  // ==== COMMON ====
-  Future<void> _deleteFin(bool isPurchase) async {
-    setState(() => _isLoading = true);
-    try {
-      if (isPurchase && _currentPurchaseItem != null) {
-        Map<String, dynamic> body = _currentPurchaseItem!.toJson();
-        body['purchase_kg'] = 0.0; 
-        body['purchase_rm'] = 0.0;
-        await http.put(Uri.parse('$apiUrl/${_currentPurchaseItem!.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-        await _fetchPurchaseData();
-      } else if (!isPurchase && _currentSalesItems.isNotEmpty) {
-        for (var item in _currentSalesItems) {
-          Map<String, dynamic> body = item.toJson();
-          body['sales_rm'] = 0.0;
-          await http.put(Uri.parse('$apiUrl/${item.id}'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
-        }
-        await _fetchSalesData();
-      }
-    } catch (e) { print(e); }
-    setState(() => _isLoading = false);
-  }
-
-  String _formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
-
-  @override
-  Widget build(BuildContext context) {
-    double recordedSalesTotal = _currentSalesItems.fold(0.0, (sum, item) => sum + item.salesRM);
-
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 800),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // ================= PURCHASE CARD =================
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.shopping_cart, color: Color(0xFF2E7D32)),
-                          const SizedBox(width: 8),
-                          const Text('Record Bulk Purchase', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
-                        ],
-                      ),
-                      const Divider(height: 32, thickness: 1.5),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text('Date: ${_formatDate(_purchaseDate)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                          TextButton.icon(
-                            onPressed: () async {
-                              final picked = await showDatePicker(context: context, initialDate: _purchaseDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
-                              if (picked != null) { setState(() => _purchaseDate = picked); _fetchPurchaseData(); }
-                            }, 
-                            icon: const Icon(Icons.calendar_month, color: Color(0xFF2E7D32)), label: const Text('Change', style: TextStyle(color: Color(0xFF2E7D32)))
-                          )
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(controller: _kgController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock Bought (KG)', prefixIcon: Icon(Icons.scale))),
-                      const SizedBox(height: 16),
-                      TextField(controller: _purchaseRmController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Total Cost (RM)', prefixIcon: Icon(Icons.attach_money))),
-                      const SizedBox(height: 24),
-                      SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: _isLoading ? null : _savePurchase, child: const Text('SAVE PURCHASE', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))),
-                      
-                      if (_currentPurchaseItem != null && (_currentPurchaseItem!.purchaseKg > 0 || _currentPurchaseItem!.purchaseRM > 0)) ...[
-                        const SizedBox(height: 20),
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(color: const Color(0xFFF9FBE7), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF2E7D32).withOpacity(0.3))),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('Stock: ${_currentPurchaseItem!.purchaseKg} KG', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                  const SizedBox(height: 4),
-                                  Text('Cost: RM ${_currentPurchaseItem!.purchaseRM.toStringAsFixed(2)}', style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.w600)),
-                                ],
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red), 
-                                onPressed: () => _deleteFin(true)
-                              )
-                            ],
-                          )
-                        )
-                      ]
-                    ],
-                  ),
-                ),
-              ),
-              
-              const SizedBox(height: 24),
-              
-              // ================= SALES CARD =================
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.trending_up, color: Color(0xFF2E7D32)),
-                          const SizedBox(width: 8),
-                          const Text('Record Sales', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
-                        ],
-                      ),
-                      const Divider(height: 24, thickness: 1.5),
-                      
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: Colors.grey[200], 
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.grey.shade300)
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _salesMode,
-                                icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF2E7D32)),
-                                items: ['Day', 'Range'].map((String value) => DropdownMenuItem<String>(
-                                  value: value, 
-                                  child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold))
-                                )).toList(),
-                                onChanged: (newValue) {
-                                  setState(() => _salesMode = newValue!);
-                                  _fetchSalesData();
-                                }
-                              ),
-                            ),
-                          ),
-                          TextButton.icon(
-                            onPressed: () async {
-                              if (_salesMode == 'Day') {
-                                final picked = await showDatePicker(context: context, initialDate: _salesDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
-                                if (picked != null) { setState(() => _salesDate = picked); _fetchSalesData(); }
-                              } else {
-                                final picked = await showDateRangePicker(context: context, firstDate: DateTime(2020), lastDate: DateTime(2101), initialDateRange: _salesDateRange);
-                                if (picked != null) { setState(() => _salesDateRange = picked); _fetchSalesData(); }
-                              }
-                            }, 
-                            icon: const Icon(Icons.calendar_month, color: Color(0xFF2E7D32)), 
-                            label: const Text('Change Date', style: TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.bold))
-                          )
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(color: Colors.blueGrey.shade50, borderRadius: BorderRadius.circular(8)),
-                        child: Text(
-                          _salesMode == 'Day' 
-                            ? 'Selected Day: ${_formatDate(_salesDate)}' 
-                            : 'Selected Range: ${_salesDateRange != null ? "${_formatDate(_salesDateRange!.start)} to ${_formatDate(_salesDateRange!.end)}" : "No Range Selected"}',
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueGrey),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(color: const Color(0xFFFFCA28).withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFFFCA28))),
-                        child: Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Total Displayed Packs:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                                Text('$_salesDisplayedPacks', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32))),
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-                            Text('Aggregated from ${_currentSalesItems.length} entries in this period', style: TextStyle(fontSize: 12, color: Colors.grey[700], fontStyle: FontStyle.italic)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(controller: _salesPriceController, keyboardType: const TextInputType.numberWithOptions(decimal: true), onChanged: (val) => _calculateSales(), decoration: const InputDecoration(labelText: 'Price Per Pack (RM)', prefixIcon: Icon(Icons.sell))),
-                      const SizedBox(height: 24),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Total Revenue:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                          Text('RM ${_totalSalesCalculated.toStringAsFixed(2)}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32))),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
-                      SizedBox(width: double.infinity, height: 50, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCA28), foregroundColor: const Color(0xFF2E7D32)), onPressed: _isLoading ? null : _saveSales, child: const Text('SAVE SALES', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))),
-
-                      if (recordedSalesTotal > 0) ...[
-                        const SizedBox(height: 20),
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(color: const Color(0xFFE8F5E9), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF2E7D32).withOpacity(0.3))),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('Recorded Revenue', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                  const SizedBox(height: 4),
-                                  Text('Total: RM ${recordedSalesTotal.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.w600)),
-                                ],
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red), 
-                                onPressed: () => _deleteFin(false) 
-                              ),
-                            ],
-                          )
-                        )
-                      ]
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// --- 5. SUMMARY PAGE ---
-class SummaryPage extends StatefulWidget {
-  const SummaryPage({Key? key}) : super(key: key);
-  @override
-  State<SummaryPage> createState() => _SummaryPageState();
-}
-
-class _SummaryPageState extends State<SummaryPage> {
-  String _filterType = 'Range'; 
-  DateTime _selectedDate = DateTime.now();
-  DateTimeRange? _selectedRange = DateTimeRange(start: DateTime.now().subtract(const Duration(days: 7)), end: DateTime.now());
-
-  Future<List<InventoryItem>> _fetchData() async {
-    final response = await http.get(Uri.parse(apiUrl)).timeout(const Duration(seconds: 5));
-    if (response.statusCode == 200) {
-      List<dynamic> data = json.decode(response.body);
-      return data.map((json) => InventoryItem.fromJson(json)).toList();
-    } else { throw Exception('Failed to load data'); }
-  }
-
-  String _formatShortDate(DateTime d) => '${d.day} ${_getMonthString(d.month)}';
-  String _getMonthString(int month) => const ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][month - 1];
-
-  Future<void> _pickFilterDate() async {
-    if (_filterType == 'Day' || _filterType == 'Month') {
-      final DateTime? picked = await showDatePicker(context: context, initialDate: _selectedDate, firstDate: DateTime(2020), lastDate: DateTime(2101));
-      if (picked != null) setState(() => _selectedDate = picked);
-    } else if (_filterType == 'Range') {
-      final DateTimeRange? picked = await showDateRangePicker(
-        context: context, 
-        firstDate: DateTime(2020), 
-        lastDate: DateTime(2101), 
-        initialDateRange: _selectedRange,
-        builder: (context, child) {
-          return Theme(
-            data: Theme.of(context).copyWith(
-              colorScheme: const ColorScheme.light(primary: Color(0xFF2E7D32), onPrimary: Colors.white, onSurface: Colors.black),
-            ),
-            child: child!,
-          );
-        },
-      );
-      if (picked != null) setState(() => _selectedRange = picked);
-    }
-  }
-
-  List<InventoryItem> _filterData(List<InventoryItem> allData) {
-    return allData.where((item) {
-      if (_filterType == 'Day') return item.date.year == _selectedDate.year && item.date.month == _selectedDate.month && item.date.day == _selectedDate.day;
-      else if (_filterType == 'Month') return item.date.year == _selectedDate.year && item.date.month == _selectedDate.month;
-      else if (_filterType == 'Range' && _selectedRange != null) {
-        DateTime itemDay = DateTime(item.date.year, item.date.month, item.date.day);
-        DateTime start = DateTime(_selectedRange!.start.year, _selectedRange!.start.month, _selectedRange!.start.day);
-        DateTime end = DateTime(_selectedRange!.end.year, _selectedRange!.end.month, _selectedRange!.end.day);
-        return (itemDay.isAtSameMomentAs(start) || itemDay.isAfter(start)) && (itemDay.isAtSameMomentAs(end) || itemDay.isBefore(end));
-      }
-      return false;
-    }).toList();
-  }
-
-  Future<void> _generatePdf(Map<String, Map<String, dynamic>> dailyTotals, double tKg, int tPacks, int tDisplay, int tBalance, double tPurchase, double tSales, double tProfit) async {
+  Future<void> _exportPdf(AppState state, Map<String, dynamic> data) async {
     final pdf = pw.Document();
-
-    pdf.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        build: (pw.Context context) {
-          return [
-            pw.Center(child: pw.Text('SUMMARY OF NANGKA SALES', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold))),
-            pw.SizedBox(height: 20),
-            ...dailyTotals.entries.map((e) {
-              double dProfit = e.value['sales'] - e.value['purchase'];
-              return _buildPdfBlock(e.key, e.value['kg'], e.value['packs'], e.value['display'], e.value['balance'], e.value['purchase'], e.value['sales'], dProfit);
-            }).toList(),
-            pw.SizedBox(height: 20),
-            _buildPdfBlock('TOTAL', tKg, tPacks, tDisplay, tBalance, tPurchase, tSales, tProfit, isTotal: true),
-          ];
-        },
-      ),
-    );
-
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) async => pdf.save(),
-      name: 'Nangka_Summary.pdf'
-    );
-  }
-
-  pw.Widget _buildPdfBlock(String title, double kg, int packs, int display, int balance, double purchase, double sales, double profit, {bool isTotal = false}) {
-    return pw.Container(
-      margin: const pw.EdgeInsets.only(bottom: 12),
-      padding: const pw.EdgeInsets.all(12),
-      decoration: pw.BoxDecoration(
-        color: isTotal ? PdfColors.grey200 : PdfColors.white,
-        border: pw.Border.all(color: isTotal ? PdfColors.blueGrey : PdfColors.grey400, width: isTotal ? 2 : 1),
-      ),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: [
-          pw.Text(title, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
-          pw.Divider(),
-          _buildPdfRow('Daily Kg', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)),
-          _buildPdfRow('Packs', '$packs'),
-          _buildPdfRow('Display', '$display'),
-          _buildPdfRow('Balance', '$balance'),
-          // FIXED: Changed all 0 formatting to 2 to preserve decimal places exactly as they are.
-          if (isTotal) _buildPdfRow('Purchase Cost', purchase.toStringAsFixed(2)),
-          _buildPdfRow('Sales', sales.toStringAsFixed(2)),
-          if (isTotal) _buildPdfRow('Profit/Loss', profit >= 0 ? '+${profit.toStringAsFixed(2)}' : profit.toStringAsFixed(2), isProfit: true, profitValue: profit),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildPdfRow(String label, String value, {bool isProfit = false, double profitValue = 0}) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.symmetric(vertical: 2),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Text(label, style: const pw.TextStyle(fontSize: 12)),
-          pw.Text(
-            value, 
-            style: pw.TextStyle(
-              fontSize: 12, 
-              fontWeight: pw.FontWeight.bold,
-              color: isProfit ? (profitValue >= 0 ? PdfColors.green700 : PdfColors.red700) : PdfColors.black,
-            )
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDataRow(String label, String value, {Color? valueColor, bool isBold = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween, 
-        children: [
-          Text(label, style: TextStyle(fontSize: 15, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: Colors.grey[700])), 
-          Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: valueColor ?? Colors.black87))
-        ]
-      ),
-    );
-  }
-
-  Widget _buildSummaryBlock(String title, double kg, int packs, int display, int balance, double purchase, double sales, double profit, {bool isTotal = false}) {
-    return Card(
-      elevation: isTotal ? 6 : 2,
-      color: isTotal ? const Color(0xFFF9FBE7) : Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: isTotal ? const Color(0xFF2E7D32) : Colors.transparent, width: isTotal ? 2 : 0)
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(isTotal ? Icons.stars : Icons.insert_chart, color: const Color(0xFF2E7D32)),
-                const SizedBox(width: 8),
-                Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: isTotal ? const Color(0xFF2E7D32) : Colors.black87)),
-              ],
-            ),
-            const Divider(height: 24, thickness: 1.5),
-            _buildDataRow('Daily Kg processed', kg.toStringAsFixed(kg == kg.roundToDouble() ? 0 : 2)), 
-            _buildDataRow('Total Packs', '$packs'), 
-            _buildDataRow('Displayed Packs', '$display'),
-            _buildDataRow('Balance Packs', '$balance'), 
-            if (isTotal) _buildDataRow('Total Purchase Cost', 'RM ${purchase.toStringAsFixed(2)}', valueColor: Colors.red[700]), 
-            _buildDataRow('Total Sales Revenue', 'RM ${sales.toStringAsFixed(2)}', valueColor: const Color(0xFF2E7D32)),
-            if (isTotal) ...[
-              const Divider(height: 24, thickness: 1.5),
-              _buildDataRow('NET PROFIT / LOSS', profit >= 0 ? '+RM ${profit.toStringAsFixed(2)}' : 'RM ${profit.toStringAsFixed(2)}', valueColor: profit >= 0 ? const Color(0xFF2E7D32) : Colors.red, isBold: true),
-            ]
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<InventoryItem>>(
-      future: _fetchData(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator(color: Color(0xFF2E7D32)));
-        if (snapshot.hasError) return Center(child: Text('Database Error.\nPlease check your connection.', textAlign: TextAlign.center, style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.bold)));
-
-        List<InventoryItem> filteredData = _filterData(snapshot.data ?? []);
+    String title = 'Nangka ${state.summaryDisplayType} Report\n(${DateFormat('dd/MM/yyyy').format(state.summaryStartDate)} - ${DateFormat('dd/MM/yyyy').format(state.summaryEndDate)})';
+    
+    pdf.addPage(pw.MultiPage(
+      pageFormat: PdfPageFormat.a4, margin: const pw.EdgeInsets.all(32),
+      build: (pw.Context context) {
+        List<pw.Widget> content = [ pw.Center(child: pw.Text(title, textAlign: pw.TextAlign.center, style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold))), pw.SizedBox(height: 20) ];
         
-        filteredData.sort((a, b) => a.date.compareTo(b.date));
-        
-        Map<String, Map<String, dynamic>> dailyTotals = {};
-        for (var item in filteredData) {
-          String dStr = _formatShortDate(item.date);
-          if (!dailyTotals.containsKey(dStr)) dailyTotals[dStr] = {'kg': 0.0, 'packs': 0, 'display': 0, 'balance': 0, 'purchase': 0.0, 'sales': 0.0};
-          dailyTotals[dStr]!['kg'] += item.kg; dailyTotals[dStr]!['packs'] += item.totalPacks; dailyTotals[dStr]!['display'] += item.displayPacks;
-          dailyTotals[dStr]!['balance'] += item.balancePacks; dailyTotals[dStr]!['purchase'] += item.purchaseRM; dailyTotals[dStr]!['sales'] += item.salesRM;
+        if (state.summaryDisplayType == 'Stock Entry') {
+          data['locations'].forEach((loc, vals) {
+            content.add(pw.Text('Location: $loc', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)));
+            content.add(pw.Divider());
+            content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Daily Processed (KG)'), pw.Text('${vals['kg']}')]));
+            content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Packs'), pw.Text('${vals['total']}')]));
+            content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Displayed Packs'), pw.Text('${vals['display']}')]));
+            content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Balance Packs'), pw.Text('${vals['balance']}')]));
+            content.add(pw.SizedBox(height: 15));
+          });
+        } else {
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Sales'), pw.Text('RM ${data['sales'].toStringAsFixed(2)}')]));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Purchase'), pw.Text('RM ${data['purchases'].toStringAsFixed(2)}')]));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Closing Stmt'), pw.Text('RM ${data['closing'].toStringAsFixed(2)}')]));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Salary'), pw.Text('RM ${data['salary'].toStringAsFixed(2)}')]));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('Total Expenses'), pw.Text('RM ${data['expenses'].toStringAsFixed(2)}')]));
+          content.add(pw.Divider(thickness: 2));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('GROSS PROFIT', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)), pw.Text('RM ${data['gross'].toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]));
+          content.add(pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('NETT PROFIT', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)), pw.Text('RM ${data['nett'].toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]));
         }
+        return content;
+      }
+    ));
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save(), name: 'Nangka_Report.pdf');
+  }
 
-        double tKg = filteredData.fold(0, (sum, item) => sum + item.kg);
-        int tPacks = filteredData.fold(0, (sum, item) => sum + item.totalPacks);
-        int tDisplay = filteredData.fold(0, (sum, item) => sum + item.displayPacks);
-        int tBalance = filteredData.fold(0, (sum, item) => sum + item.balancePacks);
-        double tPurchase = filteredData.fold(0, (sum, item) => sum + item.purchaseRM);
-        double tSales = filteredData.fold(0, (sum, item) => sum + item.salesRM);
-        double tProfit = tSales - tPurchase;
+  @override Widget build(BuildContext context) {
+    var state = Provider.of<AppState>(context);
+    bool inRange(DateTime d) => d.isAfter(state.summaryStartDate.subtract(const Duration(days: 1))) && d.isBefore(state.summaryEndDate.add(const Duration(days: 1)));
 
-        return Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 800),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.filter_alt, color: Color(0xFF2E7D32)),
-                        const SizedBox(width: 12),
-                        const Text('Filter:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _filterType, 
-                              isExpanded: true,
-                              icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF2E7D32)),
-                              items: ['Day', 'Month', 'Range'].map((String value) => DropdownMenuItem<String>(value: value, child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)))).toList(), 
-                              onChanged: (newValue) => setState(() { _filterType = newValue!; })
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        ElevatedButton(
-                          onPressed: _pickFilterDate, 
-                          style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), backgroundColor: const Color(0xFFFFCA28), foregroundColor: const Color(0xFF2E7D32)),
-                          child: const Text('Set Date')
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  if (filteredData.isEmpty)
-                    Container(
-                      margin: const EdgeInsets.only(top: 40),
-                      padding: const EdgeInsets.all(32.0), 
-                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
-                      child: Column(
-                        children: [
-                          Icon(Icons.inbox, size: 60, color: Colors.grey[300]),
-                          const SizedBox(height: 16),
-                          const Text('No records found for this period.', style: TextStyle(color: Colors.grey, fontSize: 16)),
-                        ],
-                      )
-                    )
-                  else
-                    ...dailyTotals.entries.map((e) {
-                      double dProfit = e.value['sales'] - e.value['purchase'];
-                      return _buildSummaryBlock(e.key, e.value['kg'], e.value['packs'], e.value['display'], e.value['balance'], e.value['purchase'], e.value['sales'], dProfit);
-                    }).toList(),
+    var fInvs = _invs.where((i) => inRange(i.date)).toList();
+    Map<String, Map<String, dynamic>> locData = {};
+    for (var i in fInvs) {
+      if (!locData.containsKey(i.locationName)) locData[i.locationName] = {'kg': 0.0, 'total': 0, 'display': 0, 'balance': 0};
+      locData[i.locationName]!['kg'] += i.kg; locData[i.locationName]!['total'] += i.totalPacks;
+      locData[i.locationName]!['display'] += i.displayPacks; locData[i.locationName]!['balance'] += i.balancePacks;
+    }
+    double tKg = fInvs.fold(0, (s, i) => s + i.kg); int tTot = fInvs.fold(0, (s, i) => s + i.totalPacks);
+    int tDisp = fInvs.fold(0, (s, i) => s + i.displayPacks); int tBal = fInvs.fold(0, (s, i) => s + i.balancePacks);
 
-                  if (filteredData.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    _buildSummaryBlock('GRAND TOTAL', tKg, tPacks, tDisplay, tBalance, tPurchase, tSales, tProfit, isTotal: true),
-                    const SizedBox(height: 32),
-                    SizedBox(
-                      height: 55,
-                      child: ElevatedButton.icon(
-                        onPressed: () => _generatePdf(dailyTotals, tKg, tPacks, tDisplay, tBalance, tPurchase, tSales, tProfit), 
-                        icon: const Icon(Icons.picture_as_pdf), 
-                        label: const Text('EXPORT AS PDF', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1))
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 32),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
+    double tSales = _sales.where((s) => inRange(s.date)).fold(0, (s, i) => s + i.actualRM);
+    double tPurch = _purchases.where((p) => inRange(p.date)).fold(0, (s, i) => s + i.price);
+    double tClos = _closings.where((c) => inRange(c.date)).fold(0, (s, i) => s + i.price);
+    double tSal = _salaries.where((s) => inRange(s.date)).fold(0, (s, i) => s + i.amount);
+    double tExp = _expenses.where((e) => inRange(e.date)).fold(0, (s, i) => s + i.price);
+    double gross = tSales - tPurch + tClos - tSal;
+    double nett = gross - tExp;
+
+    Map<String, dynamic> exportData = state.summaryDisplayType == 'Stock Entry' 
+      ? {'locations': locData, 'totalKg': tKg, 'totalPacks': tTot, 'display': tDisp, 'balance': tBal}
+      : {'sales': tSales, 'purchases': tPurch, 'closing': tClos, 'salary': tSal, 'expenses': tExp, 'gross': gross, 'nett': nett};
+
+    return _isLoading ? const Center(child: CircularProgressIndicator()) : Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800), child: SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        const Text('Summary Report', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
+        ElevatedButton.icon(icon: const Icon(Icons.refresh, size: 18), label: const Text('Refresh'), onPressed: _fetchAllData)
+      ]),
+      const SizedBox(height: 16),
+      Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.grey.shade300)), child: Column(children: [
+        Row(children: [Expanded(child: DropdownButtonFormField<String>(value: state.summaryDisplayType, decoration: const InputDecoration(labelText: 'Report Type'), items: ['Stock Entry', 'Finance'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (v) => state.updateSummaryDisplayType(v!))), const SizedBox(width: 12), Expanded(child: DropdownButtonFormField<String>(value: state.summaryFilterType, decoration: const InputDecoration(labelText: 'Filter By'), items: ['Day', 'Month', 'Range'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (v) => state.updateSummaryFilter(v!, DateTime.now(), DateTime.now())))]),
+        const SizedBox(height: 16), OutlinedButton.icon(onPressed: () => _pickDate(state), icon: const Icon(Icons.date_range), label: const Text('Set Date Filter')),
+        const SizedBox(height: 8), Text('${DateFormat('dd/MM/yyyy').format(state.summaryStartDate)} to ${DateFormat('dd/MM/yyyy').format(state.summaryEndDate)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey))
+      ])),
+      const SizedBox(height: 24),
+      
+      if (state.summaryDisplayType == 'Stock Entry') ...[
+        ...locData.entries.map((e) => Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(e.key, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))), const Divider(), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Daily Processed (KG)'), Text(formatVal(e.value['kg']))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Packs'), Text(formatVal(e.value['total']))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Displayed Packs'), Text(formatVal(e.value['display']))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Balance Packs'), Text(formatVal(e.value['balance']))]) ])))),
+        Card(color: const Color(0xFFE8F5E9), child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('GRAND TOTAL', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))), const Divider(), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total KG'), Text(formatVal(tKg), style: const TextStyle(fontWeight: FontWeight.bold))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Packs'), Text(formatVal(tTot), style: const TextStyle(fontWeight: FontWeight.bold))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Displayed Packs'), Text(formatVal(tDisp), style: const TextStyle(fontWeight: FontWeight.bold))]), const SizedBox(height: 4), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Balance Packs'), Text(formatVal(tBal), style: const TextStyle(fontWeight: FontWeight.bold))]) ])))
+      ] else ...[
+        Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Sales', style: TextStyle(fontSize: 16)), Text('RM ${tSales.toStringAsFixed(2)}', style: const TextStyle(fontSize: 16, color: Colors.green, fontWeight: FontWeight.bold))]), const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Purchase', style: TextStyle(fontSize: 16)), Text('RM ${tPurch.toStringAsFixed(2)}', style: const TextStyle(fontSize: 16, color: Colors.red))]), const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Closing Stmt', style: TextStyle(fontSize: 16)), Text('RM ${tClos.toStringAsFixed(2)}', style: const TextStyle(fontSize: 16, color: Colors.green))]), const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Salary', style: TextStyle(fontSize: 16)), Text('RM ${tSal.toStringAsFixed(2)}', style: const TextStyle(fontSize: 16, color: Colors.red))]), const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Expenses', style: TextStyle(fontSize: 16)), Text('RM ${tExp.toStringAsFixed(2)}', style: const TextStyle(fontSize: 16, color: Colors.red))]), 
+          const Divider(thickness: 2, height: 32),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('GROSS PROFIT', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), Text('RM ${gross.toStringAsFixed(2)}', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: gross >= 0 ? Colors.green : Colors.red))]), const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('NETT PROFIT', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)), Text('RM ${nett.toStringAsFixed(2)}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: nett >= 0 ? Colors.green : Colors.red))]),
+        ])))
+      ],
+      const SizedBox(height: 24),
+      SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: () => _exportPdf(state, exportData), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export to PDF', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16))))
+    ]))));
   }
 }
