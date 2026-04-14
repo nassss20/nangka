@@ -239,6 +239,8 @@ class _EntryPageState extends State<EntryPage> with AutomaticKeepAliveClientMixi
       'date': DateFormat('yyyy-MM-dd').format(_date), 'location_name': locName, 'kg': double.tryParse(_kgCtrl.text) ?? 0.0,
       'total_packs': int.tryParse(_totalCtrl.text) ?? 0, 'display_packs': int.tryParse(_displayCtrl.text) ?? 0,
       'rejected_amount': int.tryParse(_rejectCtrl.text) ?? 0, 'rejected_unit': _rejectUnit, 'balance_packs': _balance,
+      // ADDED THESE TWO FIELDS TO PASS LARAVEL VALIDATION
+      'purchase_rm': 0.0, 'sales_rm': 0.0,
     };
     try {
       await http.post(Uri.parse('$apiUrl/inventories'), headers: {'Content-Type': 'application/json'}, body: json.encode(body));
@@ -314,7 +316,6 @@ class _SalesTabState extends State<SalesTab> with AutomaticKeepAliveClientMixin 
   DateTime _date = DateTime.now(); 
   DateTime _filterStart = DateTime.now().subtract(const Duration(days: 7)); DateTime _filterEnd = DateTime.now();
   int? _locId; 
-  // Safety fallback array in case DB is empty!
   List<Location> _locs = [
     Location(id: 1, name: 'Mydin Meru', defaultPrice: 6.99), Location(id: 2, name: 'Mydin RTC', defaultPrice: 6.99),
     Location(id: 3, name: 'Giant Tambun', defaultPrice: 6.99), Location(id: 4, name: 'Cold Storage Sentra Mall', defaultPrice: 6.99),
@@ -345,6 +346,12 @@ class _SalesTabState extends State<SalesTab> with AutomaticKeepAliveClientMixin 
     await http.post(Uri.parse('$apiUrl/sales'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'location_id': _locId == 0 ? null : _locId, 'custom_location': _locId == 0 ? _customCtrl.text : null, 'production_packs': int.tryParse(_prodCtrl.text) ?? 0, 'actual_packs': int.tryParse(_actCtrl.text) ?? 0, 'price': p}));
     _prodCtrl.clear(); _actCtrl.clear(); _customCtrl.clear(); _fetch();
   }
+
+  // ADDED DELETE FUNCTION
+  Future<void> _delete(int id) async {
+    await http.delete(Uri.parse('$apiUrl/sales/$id'));
+    _fetch();
+  }
   
   @override Widget build(BuildContext context) {
     super.build(context);
@@ -363,7 +370,7 @@ class _SalesTabState extends State<SalesTab> with AutomaticKeepAliveClientMixin 
       const SizedBox(height: 24), SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: const Text('SAVE SALE RECORD'))),
       const SizedBox(height: 32), const Text('Sales Table', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
       buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
-      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Location')), DataColumn(label: Text('Prod(RM)')), DataColumn(label: Text('Actual(RM)')), DataColumn(label: Text('Diff(RM)'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.locationName)), DataCell(Text(formatVal(s.productionRM))), DataCell(Text(formatVal(s.actualRM))), DataCell(Text(formatVal(s.differenceRM), style: TextStyle(color: s.differenceRM < 0 ? Colors.red : Colors.green, fontWeight: FontWeight.bold)))])).toList())))
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Location')), DataColumn(label: Text('Prod(RM)')), DataColumn(label: Text('Actual(RM)')), DataColumn(label: Text('Diff(RM)')), DataColumn(label: Text('Action'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.locationName)), DataCell(Text(formatVal(s.productionRM))), DataCell(Text(formatVal(s.actualRM))), DataCell(Text(formatVal(s.differenceRM), style: TextStyle(color: s.differenceRM < 0 ? Colors.red : Colors.green, fontWeight: FontWeight.bold))), DataCell(IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _delete(s.id)))])).toList())))
     ]))));
   }
 }
@@ -380,6 +387,12 @@ class _PurchaseTabState extends State<PurchaseTab> with AutomaticKeepAliveClient
   Future<void> _fetch() async { final res = await http.get(Uri.parse('$apiUrl/purchases')); if (res.statusCode == 200) setState(() => _purchases = (json.decode(res.body) as List).map((j) => PurchaseItem.fromJson(j)).toList()); }
   Future<void> _save() async { await http.post(Uri.parse('$apiUrl/purchases'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _item == 'Others' ? _customCtrl.text : _item ?? '', 'quantity': int.tryParse(_qtyCtrl.text) ?? 1, 'unit': _unitCtrl.text.isEmpty ? '-' : _unitCtrl.text, 'price': double.tryParse(_priceCtrl.text) ?? 0.0})); _priceCtrl.clear(); _qtyCtrl.clear(); _unitCtrl.clear(); _customCtrl.clear(); _fetch(); }
   
+  // ADDED DELETE FUNCTION
+  Future<void> _delete(int id) async {
+    await http.delete(Uri.parse('$apiUrl/purchases/$id'));
+    _fetch();
+  }
+
   @override Widget build(BuildContext context) {
     super.build(context);
     var filtered = _purchases.where((p) => p.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && p.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (prev, el) => prev + el.price);
@@ -395,7 +408,7 @@ class _PurchaseTabState extends State<PurchaseTab> with AutomaticKeepAliveClient
       buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
       Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Purchase for Period:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
       const SizedBox(height: 16),
-      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty/Unit')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((p) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(p.date))), DataCell(Text(p.itemName)), DataCell(Text('${p.quantity} ${p.unit}')), DataCell(Text(p.price.toStringAsFixed(2)))])).toList())))
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty/Unit')), DataColumn(label: Text('Price(RM)')), DataColumn(label: Text('Action'))], rows: filtered.map((p) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(p.date))), DataCell(Text(p.itemName)), DataCell(Text('${p.quantity} ${p.unit}')), DataCell(Text(p.price.toStringAsFixed(2))), DataCell(IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _delete(p.id)))])).toList())))
     ]))));
   }
 }
@@ -412,6 +425,12 @@ class _ClosingTabState extends State<ClosingTab> with AutomaticKeepAliveClientMi
   Future<void> _fetch() async { final res = await http.get(Uri.parse('$apiUrl/closing-statements')); if (res.statusCode == 200) setState(() => _closings = (json.decode(res.body) as List).map((j) => ClosingItem.fromJson(j)).toList()); }
   Future<void> _save() async { await http.post(Uri.parse('$apiUrl/closing-statements'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _item == 'Others' ? _customCtrl.text : _item ?? '', 'price': double.tryParse(_priceCtrl.text) ?? 0.0, 'pcs': int.tryParse(_pcsCtrl.text), 'kg': double.tryParse(_kgCtrl.text), 'packs': int.tryParse(_packsCtrl.text)})); _priceCtrl.clear(); _pcsCtrl.clear(); _kgCtrl.clear(); _packsCtrl.clear(); _customCtrl.clear(); _fetch(); }
   
+  // ADDED DELETE FUNCTION
+  Future<void> _delete(int id) async {
+    await http.delete(Uri.parse('$apiUrl/closing-statements/$id'));
+    _fetch();
+  }
+
   @override Widget build(BuildContext context) {
     super.build(context);
     var filtered = _closings.where((c) => c.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && c.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (prev, el) => prev + el.price);
@@ -428,7 +447,7 @@ class _ClosingTabState extends State<ClosingTab> with AutomaticKeepAliveClientMi
       buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
       Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Closing Value:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32)))]))),
       const SizedBox(height: 16),
-      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Pcs/Kg/Pcks')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((c) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(c.date))), DataCell(Text(c.itemName)), DataCell(Text('${formatVal(c.pcs)} pcs / ${formatVal(c.kg)} kg / ${formatVal(c.packs)} pcks')), DataCell(Text(c.price.toStringAsFixed(2)))])).toList())))
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Pcs/Kg/Pcks')), DataColumn(label: Text('Price(RM)')), DataColumn(label: Text('Action'))], rows: filtered.map((c) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(c.date))), DataCell(Text(c.itemName)), DataCell(Text('${formatVal(c.pcs)} pcs / ${formatVal(c.kg)} kg / ${formatVal(c.packs)} pcks')), DataCell(Text(c.price.toStringAsFixed(2))), DataCell(IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _delete(c.id)))])).toList())))
     ]))));
   }
 }
@@ -445,6 +464,12 @@ class _SalaryTabState extends State<SalaryTab> with AutomaticKeepAliveClientMixi
   Future<void> _save() async { if (_empId != null) { await http.post(Uri.parse('$apiUrl/salaries'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'employee_id': _empId, 'amount': double.tryParse(_amtCtrl.text) ?? 0})); _amtCtrl.clear(); _fetch(); } }
   Future<void> _addEmp() async { final name = TextEditingController(); final pos = TextEditingController(); await showDialog(context: context, builder: (c) => AlertDialog(title: const Text('New Employee'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')), const SizedBox(height:12), TextField(controller: pos, decoration: const InputDecoration(labelText: 'Position'))]), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Save'))])) == true ? () async { if (name.text.isNotEmpty) { await http.post(Uri.parse('$apiUrl/employees'), headers: {'Content-Type': 'application/json'}, body: json.encode({'name': name.text, 'position': pos.text})); _fetch(); } }() : null; }
   
+  // ADDED DELETE FUNCTION
+  Future<void> _delete(int id) async {
+    await http.delete(Uri.parse('$apiUrl/salaries/$id'));
+    _fetch();
+  }
+
   @override Widget build(BuildContext context) {
     super.build(context);
     var filtered = _sals.where((s) => s.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && s.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (p, e) => p + e.amount);
@@ -458,7 +483,7 @@ class _SalaryTabState extends State<SalaryTab> with AutomaticKeepAliveClientMixi
       buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
       Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Salary Payout:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
       const SizedBox(height: 16),
-      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Employee')), DataColumn(label: Text('Amount(RM)'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.employee?.name ?? '-')), DataCell(Text(s.amount.toStringAsFixed(2)))])).toList())))
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Employee')), DataColumn(label: Text('Amount(RM)')), DataColumn(label: Text('Action'))], rows: filtered.map((s) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(s.date))), DataCell(Text(s.employee?.name ?? '-')), DataCell(Text(s.amount.toStringAsFixed(2))), DataCell(IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _delete(s.id)))])).toList())))
     ]))));
   }
 }
@@ -474,6 +499,12 @@ class _ExpensesTabState extends State<ExpensesTab> with AutomaticKeepAliveClient
   Future<void> _fetch() async { final r = await http.get(Uri.parse('$apiUrl/expenses')); if(r.statusCode==200) setState(()=>_exps=(json.decode(r.body) as List).map((j)=>ExpenseItem.fromJson(j)).toList()); }
   Future<void> _save() async { await http.post(Uri.parse('$apiUrl/expenses'), headers: {'Content-Type': 'application/json'}, body: json.encode({'date': DateFormat('yyyy-MM-dd').format(_date), 'item_name': _itemCtrl.text, 'quantity': int.tryParse(_qtyCtrl.text) ?? 1, 'price': double.tryParse(_priceCtrl.text) ?? 0})); _itemCtrl.clear(); _priceCtrl.clear(); _fetch(); }
   
+  // ADDED DELETE FUNCTION
+  Future<void> _delete(int id) async {
+    await http.delete(Uri.parse('$apiUrl/expenses/$id'));
+    _fetch();
+  }
+
   @override Widget build(BuildContext context) {
     super.build(context);
     var filtered = _exps.where((e) => e.date.isAfter(_filterStart.subtract(const Duration(days: 1))) && e.date.isBefore(_filterEnd.add(const Duration(days: 1)))).toList(); double sum = filtered.fold(0, (p, e) => p + e.price);
@@ -487,7 +518,7 @@ class _ExpensesTabState extends State<ExpensesTab> with AutomaticKeepAliveClient
       buildTableFilterRow(context, _filterStart, _filterEnd, (s, e) => setState(() { _filterStart = s; _filterEnd = e; })),
       Card(child: Padding(padding: const EdgeInsets.all(16.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Expenses:'), Text('RM ${sum.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red))]))),
       const SizedBox(height: 16),
-      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty')), DataColumn(label: Text('Price(RM)'))], rows: filtered.map((e) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(e.date))), DataCell(Text(e.itemName)), DataCell(Text(e.quantity.toString())), DataCell(Text(e.price.toStringAsFixed(2)))])).toList())))
+      Card(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(columns: const [DataColumn(label: Text('Date')), DataColumn(label: Text('Item')), DataColumn(label: Text('Qty')), DataColumn(label: Text('Price(RM)')), DataColumn(label: Text('Action'))], rows: filtered.map((e) => DataRow(cells: [DataCell(Text(DateFormat('dd/MM').format(e.date))), DataCell(Text(e.itemName)), DataCell(Text(e.quantity.toString())), DataCell(Text(e.price.toStringAsFixed(2))), DataCell(IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _delete(e.id)))])).toList())))
     ]))));
   }
 }
